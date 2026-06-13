@@ -3,18 +3,61 @@
 
 APScheduler에 의해 주기적으로 실행되는 비동기 작업들을 정의합니다.
 각 작업은 멱등성을 보장하며, 구조화된 로깅과 에러 처리를 포함합니다.
+
+각 작업은 실제 컴포넌트(파이프라인 / 에이전트 / 클라이언트 / 리포지토리)를 직접
+호출합니다. 자격증명 누락이나 외부 API 오류가 발생하면 조용히 통과하지 않고
+명확한 경고 로그를 남긴 뒤 작업을 실패 처리합니다.
 """
 
 import time
 import traceback
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
+from dropagent.agents.order_manager import OrderManager
+from dropagent.clients.aliexpress.affiliate_api import AliExpressAffiliateClient
+from dropagent.clients.naver.commerce_api import NaverCommerceClient
+from dropagent.clients.naver.searchad_api import NaverSearchAdClient
+from dropagent.clients.naver.shopping_api import NaverShoppingClient
+from dropagent.clients.telegram_bot import TelegramNotifier
 from dropagent.config import get_settings
+from dropagent.core.content_generator import ContentGenerator
 from dropagent.core.idempotency import IdempotencyManager
+from dropagent.core.matching import ProductMatcher
+from dropagent.db.repositories.analytics_repo import AnalyticsRepository
+from dropagent.db.repositories.order_repo import OrderRepository
+from dropagent.db.repositories.product_repo import ProductRepository
 from dropagent.db.session import get_db_session
+from dropagent.pipeline.discovery import DiscoveryPipeline
+from dropagent.pipeline.sourcing import SourcingOrchestrator
 from dropagent.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# 데모드-퍼스트 디스커버리에 사용할 시드 키워드 (한국어).
+# Search Ad 키워드 도구로 연관 키워드/절대 검색량을 확장하는 출발점입니다.
+SEED_KEYWORDS: list[str] = [
+    "무선 이어폰",
+    "캠핑 용품",
+    "강아지 장난감",
+    "주방 정리함",
+    "차량용 거치대",
+    "홈트레이닝 기구",
+    "휴대용 선풍기",
+    "골프 용품",
+]
+
+# 알리익스프레스 핫상품 수집 대상 카테고리 ID (수집은 modest 하게 유지).
+ALI_HOT_CATEGORY_IDS: list[str] = ["7", "1501", "200000343"]
+
+# 가격 모니터링 1회 실행 시 표본으로 잡을 등록 상품 수 상한.
+PRICE_MONITOR_SAMPLE_SIZE = 20
+
+# 자동 등록 임계값 (priority_score). 이 점수 이상 + status 'approved' 만 등록.
+MIN_REGISTER_PRIORITY_SCORE = 60.0
+
+# 알리 -> 원화 환산에 사용하는 기본 환율 (가격 기록용).
+DEFAULT_FX_RATE = Decimal("1350")
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -92,10 +135,11 @@ async def _fail_job(idempotency_key: str, error_message: str) -> None:
 
 async def collect_ali_products_job() -> None:
     """
-    알리익스프레스 상품 수집 (6시간마다 실행).
+    알리익스프레스 핫상품 수집 (6시간마다 실행).
 
-    Affiliate API를 사용하여 트렌드 카테고리의 상품을 수집하고
-    DB에 저장합니다. 멱등성 키로 중복 수집을 방지합니다.
+    실제 ``AliExpressAffiliateClient.get_hot_products`` 를 사용하여 몇 개의 트렌드
+    카테고리에서 인기 상품을 조회하고 수집 건수를 로깅합니다. 멱등성 키로 중복
+    수집을 방지합니다.
     """
     job_type = "collect_ali_products"
     idempotency_key = IdempotencyManager.generate_key(job_type, "batch")
@@ -104,7 +148,6 @@ async def collect_ali_products_job() -> None:
     logger.info("job_started", job_type=job_type, idempotency_key=idempotency_key[:16])
 
     try:
-        # Idempotency check
         should_proceed = await _acquire_job(job_type, idempotency_key)
         if not should_proceed:
             return
@@ -112,17 +155,29 @@ async def collect_ali_products_job() -> None:
         settings = get_settings()
         collected_count = 0
 
-        # --- Actual work ---
+        ali_client = AliExpressAffiliateClient(settings.aliexpress)
         try:
-            from dropagent.clients.aliexpress.affiliate_api import AliExpressAffiliateAPI
-
-            ali_client = AliExpressAffiliateAPI(settings)
-            products = await ali_client.get_trending_products(
-                count=settings.app.batch_size,
-            )
-            collected_count = len(products) if products else 0
-        except (ImportError, AttributeError):
-            logger.warning("job_client_unavailable", job_type=job_type, client="AliExpressAffiliateAPI")
+            for category_id in ALI_HOT_CATEGORY_IDS:
+                try:
+                    result = await ali_client.get_hot_products(category_id, page=1)
+                except Exception as cat_exc:
+                    logger.warning(
+                        "ali_hot_products_failed",
+                        job_type=job_type,
+                        category_id=category_id,
+                        error=str(cat_exc),
+                    )
+                    continue
+                count = len(result.products)
+                collected_count += count
+                logger.info(
+                    "ali_hot_products_collected",
+                    category_id=category_id,
+                    count=count,
+                    total_record_count=result.total_count,
+                )
+        finally:
+            await ali_client.close()
 
         await _complete_job(idempotency_key, {"collected_count": collected_count})
 
@@ -150,9 +205,11 @@ async def collect_ali_products_job() -> None:
 
 async def collect_naver_trends_job() -> None:
     """
-    네이버 트렌드 데이터 수집 (12시간마다 실행).
+    네이버 수요 기반 트렌드 수집 (12시간마다 실행).
 
-    네이버 DataLab API를 사용하여 인기 검색어와 카테고리 트렌드를 수집합니다.
+    ``DiscoveryPipeline`` (Search Ad 수요 확장 + Shopping 공급/경쟁 측정)을
+    시드 키워드에 대해 실행하고, 각 기회 키워드를 ``AnalyticsRepository`` 의
+    trend_data 로 영속화합니다.
     """
     job_type = "collect_naver_trends"
     idempotency_key = IdempotencyManager.generate_key(job_type, "batch")
@@ -168,14 +225,35 @@ async def collect_naver_trends_job() -> None:
         settings = get_settings()
         trend_count = 0
 
+        searchad_client = NaverSearchAdClient(settings.searchad)
+        shopping_client = NaverShoppingClient(settings.naver)
         try:
-            from dropagent.clients.naver.datalab_api import NaverDatalabAPI
+            pipeline = DiscoveryPipeline(searchad_client, shopping_client)
+            candidates = await pipeline.discover(SEED_KEYWORDS, top_n=30)
+            logger.info("discovery_candidates", job_type=job_type, count=len(candidates))
 
-            naver_client = NaverDatalabAPI(settings)
-            trends = await naver_client.get_shopping_trends()
-            trend_count = len(trends) if trends else 0
-        except (ImportError, AttributeError):
-            logger.warning("job_client_unavailable", job_type=job_type, client="NaverDatalabAPI")
+            async with get_db_session() as session:
+                analytics_repo = AnalyticsRepository(session)
+                for cand in candidates:
+                    try:
+                        await analytics_repo.add_trend_data(
+                            {
+                                "keyword": cand.keyword,
+                                "category": cand.grade_ko,
+                                "click_ratio": Decimal(str(round(cand.catalog_ratio * 100, 2))),
+                                "search_volume": int(cand.monthly_volume),
+                            }
+                        )
+                        trend_count += 1
+                    except Exception as persist_exc:
+                        logger.warning(
+                            "trend_persist_failed",
+                            keyword=cand.keyword,
+                            error=str(persist_exc),
+                        )
+        finally:
+            await searchad_client.close()
+            await shopping_client.close()
 
         await _complete_job(idempotency_key, {"trend_count": trend_count})
 
@@ -203,10 +281,10 @@ async def collect_naver_trends_job() -> None:
 
 async def update_scores_job() -> None:
     """
-    모든 상품의 우선순위 스코어 재계산 (6시간마다 실행).
+    저장된 상품의 우선순위 스코어 갱신 (6시간마다 실행).
 
-    마진율, 수요, 리스크, 운영비용, 공급사 신뢰도를 기반으로
-    priority_score를 갱신합니다.
+    이미 산출되어 저장된 마진/수요/리스크/운영비용 지표를 기반으로
+    ``PriorityScorer`` 로 priority_score 를 재계산하고 저장합니다.
     """
     job_type = "update_scores"
     idempotency_key = IdempotencyManager.generate_key(job_type, "batch")
@@ -219,49 +297,40 @@ async def update_scores_job() -> None:
         if not should_proceed:
             return
 
+        from dropagent.core.priority_scorer import PriorityScorer
+
+        scorer = PriorityScorer()
         updated_count = 0
 
-        try:
-            from sqlalchemy import select
+        async with get_db_session() as session:
+            product_repo = ProductRepository(session)
+            products = await product_repo.list_all(limit=500)
 
-            from dropagent.core.priority_scorer import PriorityScorer
-            from dropagent.db.models.product import Product
+            for product in products:
+                if product.status not in ("pending", "approved", "registered"):
+                    continue
+                try:
+                    margin = min(max(float(product.margin_rate or 0) / 100.0, 0.0), 1.0)
+                    demand = min(max(float(product.demand_score or 0), 0.0), 1.0)
+                    risk = min(max(float(product.risk_score or 0), 0.0), 1.0)
+                    ops_cost = min(max(float(product.ops_cost_score or 0), 0.0), 1.0)
+                    supplier = 0.5  # default supplier confidence
 
-            scorer = PriorityScorer()
-
-            async with get_db_session() as session:
-                result = await session.execute(
-                    select(Product).where(
-                        Product.status.in_(["pending", "approved", "registered"])
+                    breakdown = scorer.calculate_score(
+                        margin=margin,
+                        demand=demand,
+                        risk=risk,
+                        ops_cost=ops_cost,
+                        supplier=supplier,
                     )
-                )
-                products = result.scalars().all()
-
-                for product in products:
-                    try:
-                        margin = min(max(float(product.margin_rate or 0) / 100.0, 0.0), 1.0)
-                        demand = min(max(float(product.demand_score or 0), 0.0), 1.0)
-                        risk = min(max(float(product.risk_score or 0), 0.0), 1.0)
-                        ops_cost = min(max(float(product.ops_cost_score or 0), 0.0), 1.0)
-                        supplier = 0.5  # default supplier score
-
-                        breakdown = scorer.calculate_score(
-                            margin=margin,
-                            demand=demand,
-                            risk=risk,
-                            ops_cost=ops_cost,
-                            supplier=supplier,
-                        )
-                        product.priority_score = round(breakdown.final_score * 100, 2)
-                        updated_count += 1
-                    except Exception as score_exc:
-                        logger.warning(
-                            "score_calculation_failed",
-                            product_id=product.id,
-                            error=str(score_exc),
-                        )
-        except (ImportError, AttributeError):
-            logger.warning("job_dependency_unavailable", job_type=job_type)
+                    product.priority_score = round(breakdown.final_score * 100, 2)
+                    updated_count += 1
+                except Exception as score_exc:
+                    logger.warning(
+                        "score_calculation_failed",
+                        product_id=product.id,
+                        error=str(score_exc),
+                    )
 
         await _complete_job(idempotency_key, {"updated_count": updated_count})
 
@@ -291,8 +360,10 @@ async def auto_register_products_job() -> None:
     """
     승인된 상품 자동 등록 (1시간마다 실행).
 
-    priority_score가 임계값 이상이고 status가 'approved'인 상품을
-    네이버 스마트스토어에 자동 등록합니다.
+    status 가 'approved' 이고 priority_score 가 임계값 이상인 상품에 대해
+    ``SourcingOrchestrator`` 로 리스팅을 평가하고, 결과가 'ready' 인 경우에만
+    ``NaverCommerceClient.register_product`` 로 등록합니다. HITL 정책을 존중하여
+    이미 승인된 상품에만 작용합니다.
     """
     job_type = "auto_register_products"
     idempotency_key = IdempotencyManager.generate_key(job_type, "batch")
@@ -305,49 +376,76 @@ async def auto_register_products_job() -> None:
         if not should_proceed:
             return
 
-        registered_count = 0
-        failed_count = 0
         settings = get_settings()
-        min_priority_score = 60  # 등록 임계값
+        registered_count = 0
+        skipped_count = 0
+        failed_count = 0
 
+        ali_client = AliExpressAffiliateClient(settings.aliexpress)
+        commerce_client = NaverCommerceClient(settings.naver)
         try:
-            from sqlalchemy import select
-
-            from dropagent.db.models.product import Product
+            matcher = ProductMatcher(ali_client)
+            content_generator = ContentGenerator()
+            orchestrator = SourcingOrchestrator(matcher, content_generator)
 
             async with get_db_session() as session:
-                result = await session.execute(
-                    select(Product)
-                    .where(Product.status == "approved")
-                    .where(Product.priority_score >= min_priority_score)
-                    .order_by(Product.priority_score.desc())
-                    .limit(settings.app.batch_size)
+                product_repo = ProductRepository(session)
+                approved = await product_repo.list_all(
+                    status="approved", limit=settings.app.batch_size
                 )
-                products = result.scalars().all()
 
-                for product in products:
+                for product in approved:
+                    score = float(product.priority_score or 0)
+                    if score < MIN_REGISTER_PRIORITY_SCORE:
+                        skipped_count += 1
+                        continue
+
+                    from dropagent.pipeline.discovery import DiscoveryCandidate
+
+                    candidate = DiscoveryCandidate(
+                        keyword=product.product_name_ko or product.product_name_en or "",
+                        monthly_volume=0,
+                        price_median=int(product.price_naver or 0),
+                    )
                     try:
-                        from dropagent.clients.naver.commerce_api import NaverCommerceAPI
+                        sourcing = await orchestrator.evaluate_candidate(candidate)
+                    except Exception as eval_exc:
+                        failed_count += 1
+                        logger.warning(
+                            "sourcing_evaluation_failed",
+                            product_id=product.id,
+                            ali_product_id=product.ali_product_id,
+                            error=str(eval_exc),
+                        )
+                        continue
 
-                        naver_client = NaverCommerceAPI(settings)
-                        naver_product_id = await naver_client.register_product(product)
+                    if sourcing.status != "ready" or sourcing.register_payload is None:
+                        skipped_count += 1
+                        logger.info(
+                            "auto_register_skipped",
+                            product_id=product.id,
+                            status=sourcing.status,
+                            notes=sourcing.notes,
+                        )
+                        continue
 
-                        product.naver_product_id = naver_product_id
-                        product.status = "registered"
+                    try:
+                        naver_product_id = await commerce_client.register_product(
+                            sourcing.register_payload
+                        )
+                        await product_repo.update(
+                            product.id,
+                            {
+                                "naver_product_id": naver_product_id,
+                                "status": "registered",
+                            },
+                        )
                         registered_count += 1
-
                         logger.info(
                             "product_registered",
                             ali_product_id=product.ali_product_id,
                             naver_product_id=naver_product_id,
                         )
-                    except (ImportError, AttributeError):
-                        logger.warning(
-                            "job_client_unavailable",
-                            job_type=job_type,
-                            client="NaverCommerceAPI",
-                        )
-                        break
                     except Exception as reg_exc:
                         failed_count += 1
                         logger.warning(
@@ -355,28 +453,25 @@ async def auto_register_products_job() -> None:
                             ali_product_id=product.ali_product_id,
                             error=str(reg_exc),
                         )
-        except (ImportError, AttributeError):
-            logger.warning("job_dependency_unavailable", job_type=job_type)
+        finally:
+            await ali_client.close()
+            await commerce_client.close()
 
-        await _complete_job(
-            idempotency_key,
-            {"registered_count": registered_count, "failed_count": failed_count},
-        )
+        result = {
+            "registered_count": registered_count,
+            "skipped_count": skipped_count,
+            "failed_count": failed_count,
+        }
+        await _complete_job(idempotency_key, result)
 
         duration_ms = (time.monotonic() - start) * 1000
         logger.info(
             "job_completed",
             job_type=job_type,
-            registered_count=registered_count,
-            failed_count=failed_count,
             duration_ms=round(duration_ms, 1),
+            **result,
         )
-        await _log_job_run(
-            job_type,
-            "completed",
-            duration_ms,
-            {"registered_count": registered_count, "failed_count": failed_count},
-        )
+        await _log_job_run(job_type, "completed", duration_ms, result)
 
     except Exception as exc:
         duration_ms = (time.monotonic() - start) * 1000
@@ -395,8 +490,9 @@ async def check_orders_job() -> None:
     """
     신규 주문 확인 (5분마다 실행).
 
-    네이버 스마트스토어의 신규 주문을 확인하고,
-    알리익스프레스 자동 발주 처리를 준비합니다.
+    ``OrderManager.poll_new_orders`` 로 네이버 스마트스토어의 결제 완료 주문을
+    확인/영속화하고, 신규 주문이 있으면 텔레그램으로 알립니다. poll_new_orders 가
+    자체적으로 멱등하므로(naver_order_id 중복 skip) 별도 멱등성 키는 두지 않습니다.
     """
     job_type = "check_orders"
     start = time.monotonic()
@@ -406,62 +502,43 @@ async def check_orders_job() -> None:
     try:
         settings = get_settings()
         new_orders_count = 0
-        processed_count = 0
 
+        commerce_client = NaverCommerceClient(settings.naver)
         try:
-            from dropagent.clients.naver.commerce_api import NaverCommerceAPI
+            async with get_db_session() as session:
+                order_repo = OrderRepository(session)
+                product_repo = ProductRepository(session)
+                manager = OrderManager(order_repo, product_repo, commerce_client)
+                created = await manager.poll_new_orders()
+                new_orders_count = len(created)
+        finally:
+            await commerce_client.close()
 
-            naver_client = NaverCommerceAPI(settings)
-            new_orders = await naver_client.get_new_orders()
-            new_orders_count = len(new_orders) if new_orders else 0
-
-            if new_orders:
-                for order in new_orders:
-                    try:
-                        async with get_db_session() as session:
-                            from sqlalchemy import select
-
-                            from dropagent.db.models.order import Order
-
-                            # Idempotency: skip if order already exists
-                            naver_order_id = order.get("order_id", "")
-                            existing = await session.execute(
-                                select(Order).where(Order.naver_order_id == naver_order_id)
-                            )
-                            if existing.scalar_one_or_none() is not None:
-                                continue
-
-                            new_order = Order(
-                                naver_order_id=naver_order_id,
-                                product_id=order.get("product_id", 0),
-                                quantity=order.get("quantity", 1),
-                                total_price=order.get("total_price", 0),
-                                status="new",
-                            )
-                            session.add(new_order)
-                            processed_count += 1
-                    except Exception as order_exc:
-                        logger.warning(
-                            "order_processing_failed",
-                            order_id=order.get("order_id"),
-                            error=str(order_exc),
-                        )
-        except (ImportError, AttributeError):
-            logger.warning("job_client_unavailable", job_type=job_type, client="NaverCommerceAPI")
+        if new_orders_count > 0:
+            try:
+                notifier = TelegramNotifier(settings.telegram)
+                await notifier.send_message(
+                    f"[DropAgent] 신규 주문 {new_orders_count}건이 접수되었습니다."
+                )
+            except Exception as notify_exc:
+                logger.warning(
+                    "order_notification_failed",
+                    job_type=job_type,
+                    error=str(notify_exc),
+                )
 
         duration_ms = (time.monotonic() - start) * 1000
         logger.info(
             "job_completed",
             job_type=job_type,
             new_orders_count=new_orders_count,
-            processed_count=processed_count,
             duration_ms=round(duration_ms, 1),
         )
         await _log_job_run(
             job_type,
             "completed",
             duration_ms,
-            {"new_orders_count": new_orders_count, "processed_count": processed_count},
+            {"new_orders_count": new_orders_count},
         )
 
     except Exception as exc:
@@ -480,8 +557,9 @@ async def monitor_price_changes_job() -> None:
     """
     알리익스프레스 가격 변동 모니터링 (3시간마다 실행).
 
-    등록된 상품의 가격 변동을 감지하고, 마진율이 임계값 이하로
-    떨어지면 경고 로그를 남깁니다.
+    등록된 상품을 표본으로 잡아 ``AliExpressAffiliateClient.get_product_detail`` 로
+    현재 가격을 조회하고, 변동을 ``AnalyticsRepository.add_price_record`` 로
+    기록합니다.
     """
     job_type = "monitor_price_changes"
     idempotency_key = IdempotencyManager.generate_key(job_type, "batch")
@@ -494,93 +572,70 @@ async def monitor_price_changes_job() -> None:
         if not should_proceed:
             return
 
+        settings = get_settings()
         checked_count = 0
         changed_count = 0
-        alert_count = 0
-        margin_threshold = 10.0  # 마진율 10% 미만이면 경고
 
+        ali_client = AliExpressAffiliateClient(settings.aliexpress)
         try:
-            from sqlalchemy import select
-
-            from dropagent.db.models.product import Product
-
-            settings = get_settings()
-
             async with get_db_session() as session:
-                result = await session.execute(
-                    select(Product).where(Product.status == "registered")
+                product_repo = ProductRepository(session)
+                analytics_repo = AnalyticsRepository(session)
+
+                products = await product_repo.list_all(
+                    status="registered", limit=PRICE_MONITOR_SAMPLE_SIZE
                 )
-                products = result.scalars().all()
-
-                for product in products:
-                    checked_count += 1
+                by_ali_id = {
+                    p.ali_product_id: p for p in products if p.ali_product_id
+                }
+                if by_ali_id:
                     try:
-                        from dropagent.clients.aliexpress.affiliate_api import AliExpressAffiliateAPI
-
-                        ali_client = AliExpressAffiliateAPI(settings)
-                        current_price = await ali_client.get_product_price(product.ali_product_id)
-
-                        if current_price and product.price_ali:
-                            price_diff = abs(float(current_price) - float(product.price_ali))
-                            if price_diff > 0.01:
-                                changed_count += 1
-                                product.price_ali = current_price
-
-                                # Record price history
-                                from dropagent.db.models.price_history import PriceHistory
-
-                                history = PriceHistory(
-                                    product_id=product.id,
-                                    price_ali=current_price,
-                                    price_naver=product.price_naver or 0,
-                                    exchange_rate=1300.00,
-                                )
-                                session.add(history)
-
-                                # Check margin threshold
-                                if product.margin_rate and float(product.margin_rate) < margin_threshold:
-                                    alert_count += 1
-                                    logger.warning(
-                                        "low_margin_alert",
-                                        ali_product_id=product.ali_product_id,
-                                        margin_rate=float(product.margin_rate),
-                                        threshold=margin_threshold,
-                                    )
-                    except (ImportError, AttributeError):
-                        break
-                    except Exception as price_exc:
+                        details = await ali_client.get_product_detail(list(by_ali_id.keys()))
+                    except Exception as detail_exc:
                         logger.warning(
-                            "price_check_failed",
-                            ali_product_id=product.ali_product_id,
-                            error=str(price_exc),
+                            "ali_product_detail_failed",
+                            job_type=job_type,
+                            error=str(detail_exc),
                         )
-        except (ImportError, AttributeError):
-            logger.warning("job_dependency_unavailable", job_type=job_type)
+                        details = []
 
-        await _complete_job(
-            idempotency_key,
-            {
-                "checked_count": checked_count,
-                "changed_count": changed_count,
-                "alert_count": alert_count,
-            },
-        )
+                    for detail in details:
+                        product = by_ali_id.get(detail.product_id)
+                        if product is None:
+                            continue
+                        checked_count += 1
+                        current_price = detail.price.sale_price
+                        previous_price = product.price_ali
+                        if previous_price is None or current_price != previous_price:
+                            changed_count += 1
+                        try:
+                            await analytics_repo.add_price_record(
+                                product_id=product.id,
+                                price_ali=current_price,
+                                price_naver=product.price_naver or Decimal("0"),
+                                exchange_rate=DEFAULT_FX_RATE,
+                            )
+                            product.price_ali = current_price
+                        except Exception as record_exc:
+                            logger.warning(
+                                "price_record_failed",
+                                ali_product_id=product.ali_product_id,
+                                error=str(record_exc),
+                            )
+        finally:
+            await ali_client.close()
+
+        result = {"checked_count": checked_count, "changed_count": changed_count}
+        await _complete_job(idempotency_key, result)
 
         duration_ms = (time.monotonic() - start) * 1000
         logger.info(
             "job_completed",
             job_type=job_type,
-            checked_count=checked_count,
-            changed_count=changed_count,
-            alert_count=alert_count,
             duration_ms=round(duration_ms, 1),
+            **result,
         )
-        await _log_job_run(
-            job_type,
-            "completed",
-            duration_ms,
-            {"checked_count": checked_count, "changed_count": changed_count, "alert_count": alert_count},
-        )
+        await _log_job_run(job_type, "completed", duration_ms, result)
 
     except Exception as exc:
         duration_ms = (time.monotonic() - start) * 1000
@@ -599,7 +654,7 @@ async def health_check_job() -> None:
     """
     시스템 상태 점검 (1분마다 실행).
 
-    DB 연결, 메모리 사용량 등을 확인합니다.
+    DB 연결(SELECT 1)과 메모리 사용량을 확인합니다.
     경량 작업이므로 멱등성 키 없이 매번 실행합니다.
     """
     start = time.monotonic()
@@ -607,7 +662,7 @@ async def health_check_job() -> None:
     checks: dict[str, str] = {}
 
     try:
-        # 1. Database connectivity
+        # 1. Database connectivity (lightweight SELECT 1 ping)
         try:
             async with get_db_session() as session:
                 from sqlalchemy import text
@@ -665,10 +720,10 @@ async def daily_report_job() -> None:
     """
     일일 리포트 생성 및 발송 (매일 오전 9시 KST 실행).
 
-    전일 기준 주요 지표를 집계하여 텔레그램으로 발송합니다:
-    - 수집/등록/판매 상품 수
-    - 총 매출액
-    - 신규 주문 수
+    상품 현황 / 주문·매출 요약을 집계하여 ``TelegramNotifier`` 로 발송합니다:
+    - 상태별 상품 수 (ProductRepository.count_by_status 대용: list 기반 집계)
+    - 매출 요약 (OrderRepository.get_revenue_summary)
+    - 상태별 주문 수 (OrderRepository.count_by_status)
     """
     job_type = "daily_report"
     idempotency_key = IdempotencyManager.generate_key(job_type, "report")
@@ -681,61 +736,37 @@ async def daily_report_job() -> None:
         if not should_proceed:
             return
 
-        # Gather metrics
-        report_data: dict = {}
+        settings = get_settings()
+
+        async with get_db_session() as session:
+            order_repo = OrderRepository(session)
+            product_repo = ProductRepository(session)
+
+            revenue = await order_repo.get_revenue_summary(days=1)
+            order_status_counts = await order_repo.count_by_status()
+            registered = await product_repo.count(status="registered")
+            approved = await product_repo.count(status="approved")
+
+        report_data = {
+            "date": (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d"),
+            "products_registered": registered,
+            "products_approved": approved,
+            "order_status_counts": order_status_counts,
+            "total_revenue": revenue.get("total_revenue", 0.0),
+            "total_orders": revenue.get("total_orders", 0),
+        }
+
+        report_text = _format_daily_report(report_data)
         try:
-            from sqlalchemy import func, select
-
-            from dropagent.db.models.order import Order
-            from dropagent.db.models.product import Product
-
-            yesterday_start = datetime.now(UTC).replace(
-                hour=0, minute=0, second=0, microsecond=0,
-            ) - timedelta(days=1)
-            yesterday_end = yesterday_start + timedelta(days=1)
-
-            async with get_db_session() as session:
-                # Products by status
-                product_result = await session.execute(
-                    select(Product.status, func.count(Product.id)).group_by(Product.status)
-                )
-                product_counts = {row[0]: row[1] for row in product_result}
-
-                # Orders from yesterday
-                order_count_result = await session.execute(
-                    select(func.count(Order.id))
-                    .where(Order.created_at >= yesterday_start)
-                    .where(Order.created_at < yesterday_end)
-                )
-                new_orders = order_count_result.scalar() or 0
-
-                # Revenue from yesterday
-                revenue_result = await session.execute(
-                    select(func.sum(Order.total_price))
-                    .where(Order.created_at >= yesterday_start)
-                    .where(Order.created_at < yesterday_end)
-                )
-                total_revenue = float(revenue_result.scalar() or 0)
-
-                report_data = {
-                    "date": yesterday_start.strftime("%Y-%m-%d"),
-                    "product_counts": product_counts,
-                    "new_orders": new_orders,
-                    "total_revenue": total_revenue,
-                }
-        except (ImportError, AttributeError) as gather_exc:
-            logger.warning("daily_report_data_unavailable", error=str(gather_exc))
-            report_data = {"error": "Data gathering partially failed"}
-
-        # Send via Telegram
-        try:
-            from dropagent.clients.telegram_bot import send_telegram_message
-
-            report_text = _format_daily_report(report_data)
-            await send_telegram_message(report_text)
-            logger.info("daily_report_sent")
-        except (ImportError, AttributeError):
-            logger.warning("job_client_unavailable", job_type=job_type, client="telegram_bot")
+            notifier = TelegramNotifier(settings.telegram)
+            sent = await notifier.send_message(report_text)
+            logger.info("daily_report_sent", success=sent)
+        except Exception as notify_exc:
+            logger.warning(
+                "daily_report_send_failed",
+                job_type=job_type,
+                error=str(notify_exc),
+            )
 
         await _complete_job(idempotency_key, report_data)
 
@@ -768,26 +799,28 @@ async def daily_report_job() -> None:
 def _format_daily_report(data: dict) -> str:
     """일일 리포트 데이터를 텔레그램 메시지 형식으로 포맷합니다."""
     date_str = data.get("date", "N/A")
-    product_counts = data.get("product_counts", {})
-    new_orders = data.get("new_orders", 0)
+    registered = data.get("products_registered", 0)
+    approved = data.get("products_approved", 0)
+    order_status_counts = data.get("order_status_counts", {})
+    total_orders = data.get("total_orders", 0)
     total_revenue = data.get("total_revenue", 0)
 
     lines = [
         f"[DropAgent 일일 리포트] {date_str}",
         "",
         "-- 상품 현황 --",
+        f"  승인 대기/완료(approved): {approved}건",
+        f"  등록 완료(registered): {registered}건",
+        "",
+        "-- 주문/매출 --",
+        f"  신규 주문(24h): {total_orders}건",
+        f"  총 매출(24h): {total_revenue:,.0f}원",
     ]
 
-    for status, count in sorted(product_counts.items()):
-        lines.append(f"  {status}: {count}건")
-
-    lines.extend(
-        [
-            "",
-            "-- 주문/매출 --",
-            f"  신규 주문: {new_orders}건",
-            f"  총 매출: {total_revenue:,.0f}원",
-        ]
-    )
+    if order_status_counts:
+        lines.append("")
+        lines.append("-- 주문 상태별 --")
+        for status, count in sorted(order_status_counts.items()):
+            lines.append(f"  {status}: {count}건")
 
     return "\n".join(lines)
