@@ -14,7 +14,7 @@ import type { Settings } from '@/lib/types';
 
 const DEFAULT_SETTINGS: Settings = {
   scoring_weights: { margin: 0.25, demand: 0.25, risk: 0.25, ops_cost: 0.25 },
-  automation_flags: { auto_approve: false, auto_register: false, auto_order: false },
+  automation_flags: { auto_approve: false, auto_register: false, auto_order: false, auto_reprice: false },
 };
 
 const WEIGHT_LABELS: Record<string, string> = {
@@ -35,6 +35,12 @@ const FLAG_META = [
     key: 'auto_register' as const,
     label: '자동 등록 (auto_register)',
     description: '승인된 상품을 네이버 스마트스토어에 자동으로 등록합니다.',
+    danger: false,
+  },
+  {
+    key: 'auto_reprice' as const,
+    label: '자동 재가격책정 (auto_reprice)',
+    description: '최저가 변동 시 네이버 판매가를 자동 갱신합니다. 마진 하한 미만으로는 절대 내리지 않으며, 끄면 분석만 기록하고 가격 변경은 보류합니다.',
     danger: false,
   },
   {

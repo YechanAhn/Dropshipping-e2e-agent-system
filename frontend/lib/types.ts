@@ -6,9 +6,18 @@ export interface ProductOut {
   product_name_ko: string | null;
   category_ali: string | null;
   category_naver: string | null;
-  price_ali: number | null; // AliExpress sale price, in USD
-  price_ali_krw: number | null; // AliExpress price converted to KRW (server-computed)
-  price_naver: number | null;
+  price_ali: number | null; // AliExpress sale price, in KRW (target_currency=KRW)
+  price_ali_krw: number | null; // mirror of price_ali (already KRW)
+  price_naver: number | null; // our SmartStore sale price (KRW)
+  // 최저가 노출 추적
+  naver_catalog_lowest: number | null; // 가격비교 대표(catalog) 최저가 = 배지 가격
+  naver_price_min_market: number | null; // 검색결과 전체 최저가 (단독 포함)
+  is_price_lowest: boolean; // 현재 최저가(배지) 보유 여부
+  price_floor: number | null; // 마진 하한 가격
+  pricing_strategy: string | null; // catalog_match | standalone
+  last_repriced_at: string | null;
+  price_gap: number | null; // price_naver - naver_catalog_lowest (양수면 더 비쌈)
+  badge_at_risk: boolean; // 최저가보다 비싸 배지 미확보 → 노출 위험
   margin_rate: number | null;
   priority_score: number | null;
   risk_score: number | null;
@@ -53,6 +62,7 @@ export interface AutomationFlags {
   auto_approve: boolean;
   auto_register: boolean;
   auto_order: boolean;
+  auto_reprice: boolean;
 }
 
 export interface Settings {

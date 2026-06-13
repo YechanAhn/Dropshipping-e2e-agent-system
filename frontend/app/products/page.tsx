@@ -152,7 +152,7 @@ export default function ProductsPage() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border">
-                    {['상품명', 'ALI 가격', 'N 가격', '마진율', '우선순위', '수요', '리스크', '상태', '액션'].map((h) => (
+                    {['상품명', 'ALI 원가', '네이버 최저가', '판매가', '마진율', '우선순위', '수요', '상태', '액션'].map((h) => (
                       <th key={h} className="py-3 px-4 text-left text-xs font-semibold text-muted uppercase tracking-wider whitespace-nowrap">
                         {h}
                       </th>
@@ -170,13 +170,36 @@ export default function ProductsPage() {
                           <p className="font-medium text-ink truncate max-w-[180px]" title={name}>{name}</p>
                           <p className="text-xs text-muted mt-0.5">{product.category_naver ?? product.category_ali ?? '—'}</p>
                         </td>
+                        <td className="py-3 px-4 text-ink">{formatKRW(product.price_ali_krw)}</td>
                         <td className="py-3 px-4">
-                          <span className="text-ink">{formatKRW(product.price_ali_krw)}</span>
-                          {product.price_ali != null && (
-                            <span className="block text-xs text-muted mt-0.5">{`$${product.price_ali.toFixed(2)}`}</span>
+                          {product.naver_catalog_lowest != null ? (
+                            <>
+                              <span className="text-ink font-medium">{formatKRW(product.naver_catalog_lowest)}</span>
+                              {product.naver_price_min_market != null &&
+                                product.naver_price_min_market !== product.naver_catalog_lowest && (
+                                  <span className="block text-xs text-muted mt-0.5">
+                                    시장 {formatKRW(product.naver_price_min_market)}
+                                  </span>
+                                )}
+                            </>
+                          ) : (
+                            <span className="text-xs text-muted">—</span>
                           )}
                         </td>
-                        <td className="py-3 px-4 text-ink font-medium">{formatKRW(product.price_naver)}</td>
+                        <td className="py-3 px-4">
+                          <span className="text-ink font-medium">{formatKRW(product.price_naver)}</span>
+                          <div className="mt-0.5">
+                            {product.is_price_lowest ? (
+                              <span className="inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded bg-success-soft text-success">
+                                최저가 보유
+                              </span>
+                            ) : product.badge_at_risk ? (
+                              <span className="inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded bg-danger-soft text-danger">
+                                최저가 아님{product.price_gap != null ? ` +${formatKRW(product.price_gap)}` : ''}
+                              </span>
+                            ) : null}
+                          </div>
+                        </td>
                         <td className="py-3 px-4">
                           <span className={[
                             'text-sm font-semibold',
@@ -190,9 +213,6 @@ export default function ProductsPage() {
                         </td>
                         <td className="py-3 px-4">
                           <ScoreBar value={product.demand_score} color="bg-secondary" />
-                        </td>
-                        <td className="py-3 px-4">
-                          <ScoreBar value={product.risk_score} color="bg-danger" />
                         </td>
                         <td className="py-3 px-4">
                           <StatusBadge status={product.status} />
