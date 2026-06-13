@@ -11,10 +11,24 @@ Then run it with uvicorn, e.g. ``uvicorn dropagent.api.app:create_app --factory`
 """
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from dropagent.api.middleware import RequestLoggingMiddleware
 from dropagent.api.routes import analytics, orders, products, settings
+
+# Origins allowed to call the API from a browser (the Next.js dashboard). Local
+# dev defaults; extend via the comma-separated DASHBOARD_ORIGINS env var.
+DEFAULT_DASHBOARD_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+
+def _dashboard_origins() -> list[str]:
+    extra = os.environ.get("DASHBOARD_ORIGINS", "")
+    origins = list(DEFAULT_DASHBOARD_ORIGINS)
+    origins.extend(o.strip() for o in extra.split(",") if o.strip())
+    return origins
 
 
 def create_app() -> FastAPI:
@@ -34,6 +48,12 @@ def create_app() -> FastAPI:
     )
 
     app.add_middleware(RequestLoggingMiddleware)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_dashboard_origins(),
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     app.include_router(products.router)
     app.include_router(orders.router)

@@ -270,3 +270,13 @@ async def test_settings_get_and_put(client: httpx.AsyncClient) -> None:
     put_resp = await client.put("/settings/", json=current)
     assert put_resp.status_code == 200
     assert put_resp.json()["automation_flags"]["auto_approve"] is True
+
+
+async def test_cors_allows_dashboard_origin():
+    """The Next.js dashboard origin is allowed by CORS."""
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/health", headers={"Origin": "http://localhost:3000"})
+    assert resp.status_code == 200
+    assert resp.headers.get("access-control-allow-origin") == "http://localhost:3000"
