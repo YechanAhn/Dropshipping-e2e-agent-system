@@ -42,6 +42,8 @@ class MatchCandidate:
         ali_product: The underlying AliExpress product (``AliProduct``-like object).
         title_similarity: Token-overlap similarity between query and product title (0..1).
         price_ratio: AliExpress price converted to KRW divided by the Naver price.
+        image_similarity: Perceptual-hash photo similarity to the Naver product
+            (0..1), or ``None`` when no image scorer ran / images were missing.
         confidence: Verifier confidence that this is the same item (0..1).
         reason: Human-readable explanation produced by the verifier.
     """
@@ -49,6 +51,7 @@ class MatchCandidate:
     ali_product: Any
     title_similarity: float
     price_ratio: float
+    image_similarity: float | None = None
     confidence: float = 0.0
     reason: str = ""
 

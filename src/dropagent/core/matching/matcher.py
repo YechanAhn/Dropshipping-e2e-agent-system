@@ -21,6 +21,7 @@ fakes and never touch the network.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Awaitable, Callable
 from decimal import Decimal
@@ -39,15 +40,33 @@ Translator = Callable[[NaverProductRef], Awaitable[str]]
 # ``(confidence in 0..1, human-readable reason)``.
 Verifier = Callable[[NaverProductRef, object], Awaitable[tuple[float, str]]]
 
+# An image scorer compares two image URLs and returns a 0..1 similarity (or
+# ``None`` when it cannot be computed). See ``core.image_processor``.
+ImageScorer = Callable[[str, str], Awaitable["float | None"]]
+
 # Default USD -> KRW conversion used when none is supplied.
 DEFAULT_FX_RATE = 1350.0
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+# A spec/model token is an alphanumeric token containing at least one digit
+# (model numbers like 'jr-t03', capacities like '20000mah', '500ml', '4k').
+_SPEC_TOKEN_RE = re.compile(r"[a-z0-9]*\d[a-z0-9]*")
 
 
 def _tokenize(text: str) -> set[str]:
     """Lowercase ``text`` and split it into a set of alphanumeric tokens."""
     return set(_TOKEN_RE.findall(text.lower()))
+
+
+def extract_spec_tokens(text: str) -> set[str]:
+    """
+    Extract model/spec tokens (alphanumerics containing a digit) from a title.
+
+    These are strong product-identity locks -- e.g. '20000mah', 'jr-t03', '4k'
+    -- that survive KO->EN translation, so a shared spec token between a Naver
+    and an AliExpress title is high-precision evidence of the same SKU.
+    """
+    return set(_SPEC_TOKEN_RE.findall(text.lower()))
 
 
 def title_similarity(a: str, b: str) -> float:
@@ -88,6 +107,11 @@ class ProductMatcher:
             LLM-backed translator built lazily on first use.
         verifier: Optional ``(naver, ali_product) -> (confidence, reason)``
             coroutine.  Defaults to an LLM-backed comparison built lazily.
+        image_scorer: Optional ``(naver_image_url, ali_image_url) -> 0..1|None``
+            coroutine (e.g. ``core.image_processor.make_image_scorer()``).  When
+            given, price-plausible candidates are re-ranked by photo similarity
+            before shortlisting, narrowing a broad title match to the same SKU.
+            Defaults to ``None`` (title-similarity ranking only, no network).
         fx_rate: USD -> KRW rate used to convert AliExpress sale prices for the
             price-ratio plausibility check.
     """
@@ -98,11 +122,13 @@ class ProductMatcher:
         *,
         translator: Translator | None = None,
         verifier: Verifier | None = None,
+        image_scorer: ImageScorer | None = None,
         fx_rate: float = DEFAULT_FX_RATE,
     ) -> None:
         self._ali_client = ali_client
         self._translator = translator
         self._verifier = verifier
+        self._image_scorer = image_scorer
         self._fx_rate = fx_rate
         # Lazily-constructed LLM router shared by the default impls so we only
         # ever build (and key-check) it once, and never at construction time.
@@ -177,6 +203,7 @@ class ProductMatcher:
         auto_threshold: float = 0.85,
         review_threshold: float = 0.6,
         price_ratio_bounds: tuple[float, float] = (0.05, 0.8),
+        require_spec_match: bool = False,
     ) -> MatchResult:
         """
         Find the AliExpress product that best matches ``naver``.
@@ -191,6 +218,10 @@ class ProductMatcher:
                 ``ali_price_krw / naver_price``.  AliExpress must be meaningfully
                 cheaper than Naver, so plausible matches fall below ``high``;
                 anything outside the band is treated as implausible and dropped.
+            require_spec_match: When the Naver title carries model/spec tokens
+                (e.g. '20000mah', 'jr-t03'), drop candidates whose title shares
+                none of them.  High-precision identity lock; off by default to
+                preserve recall.
 
         Returns:
             A :class:`MatchResult` with the decision, query, best candidate, and
@@ -212,15 +243,20 @@ class ProductMatcher:
             result_count=len(products),
         )
 
-        # 3. Coarse filter: keep only price-plausible products.
+        # 3. Coarse filter: keep only price-plausible (and, optionally,
+        #    spec-matching) products.
         low, high = price_ratio_bounds
         query_for_similarity = query_en or naver.title_ko
+        naver_specs = extract_spec_tokens(naver.title_ko) if require_spec_match else set()
         plausible: list[MatchCandidate] = []
         for product in products:
             price_ratio = self._price_ratio(product, naver.price)
             if price_ratio is None or not (low <= price_ratio <= high):
                 continue
-            similarity = title_similarity(query_for_similarity, getattr(product, "title", ""))
+            ali_title = getattr(product, "title", "")
+            if naver_specs and not (naver_specs & extract_spec_tokens(ali_title)):
+                continue
+            similarity = title_similarity(query_for_similarity, ali_title)
             plausible.append(
                 MatchCandidate(
                     ali_product=product,
@@ -234,8 +270,20 @@ class ProductMatcher:
             logger.info("matching_no_plausible_candidate", query_en=query_en)
             return MatchResult(status=MatchStatus.REJECT, query_en=query_en, best=None, candidates=[])
 
-        # 4. Shortlist the top-K by title similarity.
-        shortlist = sorted(plausible, key=lambda c: c.title_similarity, reverse=True)[:top_k]
+        # 3b. Optional image re-rank: score each candidate's photo against the
+        #     Naver photo so the shortlist is "same photo", not just same words.
+        if self._image_scorer is not None and naver.image_url:
+            scores = await asyncio.gather(
+                *(
+                    self._image_scorer(naver.image_url, getattr(c.ali_product, "image_url", ""))
+                    for c in plausible
+                )
+            )
+            for candidate, score in zip(plausible, scores, strict=True):
+                candidate.image_similarity = score
+
+        # 4. Shortlist the top-K, image-aware when available (fall back to title).
+        shortlist = sorted(plausible, key=self._rank_key, reverse=True)[:top_k]
 
         # 5. Verify each shortlisted candidate.
         for candidate in shortlist:
@@ -276,6 +324,16 @@ class ProductMatcher:
             return None
         ali_price_krw = float(sale_price_usd) * self._fx_rate
         return ali_price_krw / naver_price
+
+    @staticmethod
+    def _rank_key(candidate: MatchCandidate) -> tuple[float, float]:
+        """Rank by photo similarity when scored, else title; title breaks ties."""
+        primary = (
+            candidate.image_similarity
+            if candidate.image_similarity is not None
+            else candidate.title_similarity
+        )
+        return (primary, candidate.title_similarity)
 
     @staticmethod
     def _classify(confidence: float, auto_threshold: float, review_threshold: float) -> MatchStatus:

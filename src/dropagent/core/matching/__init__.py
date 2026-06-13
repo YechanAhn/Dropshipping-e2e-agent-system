@@ -7,14 +7,18 @@ translate -> search -> filter -> verify -> threshold pipeline.
 Public API:
     - :class:`NaverProductRef`, :class:`MatchCandidate`, :class:`MatchResult`,
       :class:`MatchStatus` (models)
-    - :class:`ProductMatcher` and the :func:`title_similarity` helper (matcher)
-    - :data:`Translator` / :data:`Verifier` type aliases for injected dependencies
+    - :class:`ProductMatcher` and the :func:`title_similarity` /
+      :func:`extract_spec_tokens` helpers (matcher)
+    - :data:`Translator` / :data:`Verifier` / :data:`ImageScorer` type aliases
+      for injected dependencies
 """
 
 from dropagent.core.matching.matcher import (
+    ImageScorer,
     ProductMatcher,
     Translator,
     Verifier,
+    extract_spec_tokens,
     title_similarity,
 )
 from dropagent.core.matching.models import (
@@ -32,5 +36,7 @@ __all__ = [
     "ProductMatcher",
     "Translator",
     "Verifier",
+    "ImageScorer",
     "title_similarity",
+    "extract_spec_tokens",
 ]

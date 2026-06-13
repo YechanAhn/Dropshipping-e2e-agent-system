@@ -20,6 +20,7 @@ from dropagent.core.matching import (
     MatchStatus,
     NaverProductRef,
     ProductMatcher,
+    extract_spec_tokens,
     title_similarity,
 )
 
@@ -202,6 +203,98 @@ async def test_reject_when_all_priced_implausibly(naver):
     assert result.candidates == []
 
 
+def mapping_image_scorer(by_ali_url: dict[str, float | None]):
+    """An async image scorer keyed by the AliExpress image URL."""
+
+    async def _score(naver_url: str, ali_url: str) -> float | None:
+        return by_ali_url.get(ali_url)
+
+    return _score
+
+
+# =====================================================================
+# Image re-rank + spec-token identity locks
+# =====================================================================
+
+
+async def test_no_image_scorer_leaves_similarity_none(naver):
+    """Default (no scorer): image_similarity stays None, title ranking unchanged."""
+    products = [make_product("A1", "LED Ring Light Tripod Stand", "10.00")]
+    matcher = ProductMatcher(
+        FakeAliClient(products),
+        translator=constant_translator("LED Ring Light Tripod Stand"),
+        verifier=constant_verifier(0.9, "same item"),
+    )
+
+    result = await matcher.match(naver)
+
+    assert result.best is not None
+    assert result.best.image_similarity is None
+
+
+async def test_image_scorer_reranks_shortlist(naver):
+    """A high-photo-similarity but low-title product wins once images are scored."""
+    products = [
+        make_product("HIGH_TITLE", "LED Ring Light Tripod Stand", "10.00"),  # title 1.0
+        make_product("HIGH_IMAGE", "lamp", "10.00"),                          # title ~0.0
+    ]
+    scorer = mapping_image_scorer(
+        {
+            "https://img.example/HIGH_TITLE.jpg": 0.10,
+            "https://img.example/HIGH_IMAGE.jpg": 0.95,
+        }
+    )
+    matcher = ProductMatcher(
+        FakeAliClient(products),
+        translator=constant_translator("LED Ring Light Tripod Stand"),
+        verifier=constant_verifier(0.9, "same item"),
+        image_scorer=scorer,
+    )
+
+    result = await matcher.match(naver, top_k=1)
+
+    assert result.best is not None
+    assert result.best.ali_product.product_id == "HIGH_IMAGE"
+    assert result.best.image_similarity == 0.95
+
+
+async def test_image_scorer_populates_similarity_field(naver):
+    """Every plausible candidate gets its image_similarity recorded."""
+    products = [make_product("A1", "LED Ring Light Tripod Stand", "10.00")]
+    scorer = mapping_image_scorer({"https://img.example/A1.jpg": 0.8})
+    matcher = ProductMatcher(
+        FakeAliClient(products),
+        translator=constant_translator("LED Ring Light Tripod Stand"),
+        verifier=constant_verifier(0.9, "same item"),
+        image_scorer=scorer,
+    )
+
+    result = await matcher.match(naver)
+
+    assert result.best is not None
+    assert result.best.image_similarity == 0.8
+
+
+async def test_require_spec_match_drops_mismatched_models():
+    """With require_spec_match, only candidates sharing a spec token survive."""
+    naver = NaverProductRef(title_ko="보조배터리 20000mah 대용량", price=30_000)
+    products = [
+        make_product("SAME", "Power Bank 20000mAh Fast Charge", "10.00"),
+        make_product("OTHER", "Power Bank 10000mAh Mini", "10.00"),
+    ]
+    matcher = ProductMatcher(
+        FakeAliClient(products),
+        translator=constant_translator("power bank 20000mah"),
+        verifier=constant_verifier(0.9, "same item"),
+    )
+
+    result = await matcher.match(naver, require_spec_match=True)
+
+    assert result.status == MatchStatus.AUTO
+    assert len(result.candidates) == 1
+    assert result.candidates[0].ali_product.product_id == "SAME"
+
+
 async def test_reject_on_low_confidence(naver):
     """A price-plausible product but low verifier confidence -> REJECT."""
     products = [make_product("L1", "LED Ring Light Tripod Stand", "10.00")]
@@ -311,3 +404,19 @@ async def test_custom_fx_rate_changes_plausibility(naver):
 
     assert result.status == MatchStatus.REJECT
     assert result.best is None
+
+
+class TestExtractSpecTokens:
+    """Model/spec token extraction (alphanumerics containing a digit)."""
+
+    def test_extracts_capacity_and_skips_non_digit_tokens(self):
+        assert extract_spec_tokens("Power Bank 20000mAh Type-C") == {"20000mah"}
+
+    def test_extracts_model_number(self):
+        assert extract_spec_tokens("JR-T03 Bluetooth Earbuds") == {"t03"}
+
+    def test_extracts_multiple_specs(self):
+        assert extract_spec_tokens("4K Action Cam 64GB") == {"4k", "64gb"}
+
+    def test_no_specs_returns_empty(self):
+        assert extract_spec_tokens("ring light tripod stand") == set()
