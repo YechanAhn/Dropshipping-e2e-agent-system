@@ -40,6 +40,27 @@ class NaverSettings(BaseSettings):
     )
 
 
+class NaverSearchAdSettings(BaseSettings):
+    """
+    Naver Search Ad (검색광고) API settings.
+
+    Used by the Keyword Tool (``/keywordstool``) which is the only source of
+    absolute monthly search volume (월간검색수). Credentials are issued from
+    the 검색광고 management UI: 도구 > API 사용 관리.
+    """
+
+    api_key: str = Field(..., alias="NAVER_SEARCHAD_API_KEY")
+    secret_key: str = Field(..., alias="NAVER_SEARCHAD_SECRET_KEY")
+    customer_id: str = Field(..., alias="NAVER_SEARCHAD_CUSTOMER_ID")
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=True,
+        extra="ignore",
+    )
+
+
 class AliExpressSettings(BaseSettings):
     """AliExpress API settings."""
 
@@ -172,6 +193,7 @@ class Settings(BaseSettings):
     app: AppSettings = Field(default_factory=AppSettings)
     anthropic: AnthropicSettings = Field(default_factory=AnthropicSettings)
     naver: NaverSettings = Field(default_factory=NaverSettings)
+    searchad: NaverSearchAdSettings = Field(default_factory=NaverSearchAdSettings)
     aliexpress: AliExpressSettings = Field(default_factory=AliExpressSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     redis: RedisSettings = Field(default_factory=RedisSettings)
@@ -192,6 +214,7 @@ class Settings(BaseSettings):
         self.app = AppSettings()
         self.anthropic = AnthropicSettings()
         self.naver = NaverSettings()
+        self.searchad = NaverSearchAdSettings()
         self.aliexpress = AliExpressSettings()
         self.database = DatabaseSettings()
         self.redis = RedisSettings()
