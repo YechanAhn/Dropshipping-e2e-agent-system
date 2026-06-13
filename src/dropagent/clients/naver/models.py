@@ -6,7 +6,7 @@ Search API, the Naver Commerce API, and the Naver DataLab Shopping Insight API.
 """
 
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ---------------------------------------------------------------------------
 # Naver Shopping productType code classification (single source of truth)
@@ -43,6 +43,14 @@ class NaverShoppingItem(BaseModel):
     category4: str = Field(default="", description="Fourth-level category name")
 
     model_config = {"populate_by_name": True}
+
+    @field_validator("lowest_price", "highest_price", mode="before")
+    @classmethod
+    def _empty_price_to_zero(cls, v: object) -> object:
+        """The live Shopping API returns hprice/lprice as '' when absent -> 0."""
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return 0
+        return v
 
     @property
     def is_catalog(self) -> bool:

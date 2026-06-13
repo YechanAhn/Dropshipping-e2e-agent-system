@@ -20,8 +20,14 @@ from dropagent.api.middleware import RequestLoggingMiddleware
 from dropagent.api.routes import analytics, orders, products, settings
 
 # Origins allowed to call the API from a browser (the Next.js dashboard). Local
-# dev defaults; extend via the comma-separated DASHBOARD_ORIGINS env var.
-DEFAULT_DASHBOARD_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
+# dev defaults (3000 and 3001, since Next falls back to 3001 when 3000 is taken);
+# extend via the comma-separated DASHBOARD_ORIGINS env var.
+DEFAULT_DASHBOARD_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
+]
 
 
 def _dashboard_origins() -> list[str]:

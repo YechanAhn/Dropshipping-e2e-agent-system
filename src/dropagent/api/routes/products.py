@@ -7,7 +7,6 @@ All endpoints are wired to :class:`ProductRepository` through the
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -34,24 +33,27 @@ class ProductOut(BaseModel):
     product_name_ko: str | None = None
     category_ali: str | None = None
     category_naver: str | None = None
-    price_ali: Decimal | None = None  # AliExpress sale price, in KRW (target_currency=KRW)
-    price_ali_krw: Decimal | None = None  # alias of price_ali (already KRW); kept for dashboard
-    price_naver: Decimal | None = None
+    # Money/score fields are emitted as JSON numbers (not Decimal strings) so the
+    # dashboard's number formatting/arithmetic works directly. KRW are whole won,
+    # exact in float64.
+    price_ali: float | None = None  # AliExpress sale price, in KRW (target_currency=KRW)
+    price_ali_krw: float | None = None  # alias of price_ali (already KRW); kept for dashboard
+    price_naver: float | None = None
     # 최저가 노출 추적
-    naver_catalog_lowest: Decimal | None = None  # 가격비교 대표(catalog) 최저가 = 배지가
-    naver_price_min_market: Decimal | None = None  # 검색결과 전체 최저가 (단독 포함)
+    naver_catalog_lowest: float | None = None  # 가격비교 대표(catalog) 최저가 = 배지가
+    naver_price_min_market: float | None = None  # 검색결과 전체 최저가 (단독 포함)
     is_price_lowest: bool = False  # 현재 최저가(배지) 보유 여부
-    price_floor: Decimal | None = None  # 마진 하한 가격
+    price_floor: float | None = None  # 마진 하한 가격
     pricing_strategy: str | None = None  # catalog_match | standalone
     last_repriced_at: datetime | None = None
     # 파생값 (대시보드용)
-    price_gap: Decimal | None = None  # price_naver - naver_catalog_lowest (양수면 더 비쌈)
+    price_gap: float | None = None  # price_naver - naver_catalog_lowest (양수면 더 비쌈)
     badge_at_risk: bool = False  # 최저가보다 비싸 배지 미확보 → 노출 위험
-    margin_rate: Decimal | None = None
-    priority_score: Decimal | None = None
-    risk_score: Decimal | None = None
-    ops_cost_score: Decimal | None = None
-    demand_score: Decimal | None = None
+    margin_rate: float | None = None
+    priority_score: float | None = None
+    risk_score: float | None = None
+    ops_cost_score: float | None = None
+    demand_score: float | None = None
     status: str
 
     @field_validator("is_price_lowest", "badge_at_risk", mode="before")

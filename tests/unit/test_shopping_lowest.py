@@ -102,3 +102,21 @@ def test_item_type_helpers(product_type, is_catalog, is_standalone):
     item = NaverShoppingItem(lowest_price=1000, product_type=product_type)
     assert item.is_catalog is is_catalog
     assert item.is_standalone is is_standalone
+
+
+def test_item_empty_price_coerced_to_zero():
+    """The live Shopping API returns hprice/lprice as '' when absent -> coerce to 0."""
+    from dropagent.clients.naver.models import NaverShoppingItem
+
+    item = NaverShoppingItem.model_validate({"lprice": "12000", "hprice": "", "productType": 1})
+    assert item.lowest_price == 12000
+    assert item.highest_price == 0
+
+
+async def test_get_catalog_lowest_tolerates_empty_hprice():
+    """End-to-end: an item with empty hprice must not crash get_catalog_lowest."""
+    items = [{"lprice": "9900", "hprice": "", "productType": 1, "mallName": "A"}]
+    client = NaverShoppingClient(http_client=_FakeHttp(_payload(items, total=1)))
+    res = await client.get_catalog_lowest("키워드")
+    assert res.lowest_price == 9900
+    assert res.catalog_parent_price == 9900
