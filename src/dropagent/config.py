@@ -67,6 +67,11 @@ class AliExpressSettings(BaseSettings):
     app_key: str = Field(..., alias="ALI_APP_KEY")
     app_secret: str = Field(..., alias="ALI_APP_SECRET")
     tracking_id: str = Field(..., alias="ALI_TRACKING_ID")
+    # Ask AliExpress to return prices ALREADY converted to this currency, so we
+    # never guess an FX rate for the source price. KRW = native won straight from
+    # the API (AliExpress applies its own buyer-side FX, which is what we pay).
+    target_currency: str = Field(default="KRW", alias="ALI_TARGET_CURRENCY")
+    target_language: str = Field(default="EN", alias="ALI_TARGET_LANGUAGE")
 
     model_config = SettingsConfigDict(
         env_file=".env",

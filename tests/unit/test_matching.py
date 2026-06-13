@@ -78,6 +78,17 @@ def make_product(product_id: str, title: str, usd: str) -> FakeAliProduct:
     )
 
 
+# Fixed USD->KRW rate so price-ratio assertions are deterministic and offline
+# (the matcher would otherwise resolve the rate live from ExchangeRateClient).
+FX_RATE = 1500.0
+
+
+def _matcher(client, **kwargs) -> ProductMatcher:
+    """Build a ProductMatcher with a fixed FX rate unless one is given."""
+    kwargs.setdefault("fx_rate", FX_RATE)
+    return ProductMatcher(client, **kwargs)
+
+
 def constant_translator(query: str):
     """Return an async translator that always yields ``query``."""
 
@@ -146,9 +157,9 @@ def naver():
 
 async def test_auto_match(naver):
     """A plausible cheaper product + high verifier confidence -> AUTO."""
-    # 10 USD * 1350 / 30000 = 0.45 -> within (0.05, 0.8).
+    # 10 USD * 1500 / 30000 = 0.5 -> within (0.05, 0.8).
     products = [make_product("A1", "LED Ring Light Tripod Stand", "10.00")]
-    matcher = ProductMatcher(
+    matcher = _matcher(
         FakeAliClient(products),
         translator=constant_translator("LED Ring Light Tripod Stand"),
         verifier=constant_verifier(0.9, "same item"),
@@ -162,14 +173,14 @@ async def test_auto_match(naver):
     assert result.best.ali_product.product_id == "A1"
     assert result.best.confidence == pytest.approx(0.9)
     assert result.best.reason == "same item"
-    assert result.best.price_ratio == pytest.approx(0.45)
+    assert result.best.price_ratio == pytest.approx(0.5)
     assert len(result.candidates) == 1
 
 
 async def test_review_band(naver):
     """Mid confidence (>= review, < auto) -> REVIEW with a best candidate."""
     products = [make_product("R1", "LED Ring Light Tripod Stand", "10.00")]
-    matcher = ProductMatcher(
+    matcher = _matcher(
         FakeAliClient(products),
         translator=constant_translator("LED Ring Light Tripod Stand"),
         verifier=constant_verifier(0.7, "probably"),
@@ -184,12 +195,12 @@ async def test_review_band(naver):
 
 async def test_reject_when_all_priced_implausibly(naver):
     """All candidates more expensive than Naver (price_ratio > bounds) -> REJECT."""
-    # 30 USD * 1350 / 30000 = 1.35 -> above the 0.8 upper bound.
+    # 30 USD * 1500 / 30000 = 1.5 -> above the 0.8 upper bound.
     products = [
         make_product("X1", "LED Ring Light Tripod Stand", "30.00"),
         make_product("X2", "LED Ring Light Tripod Stand", "50.00"),
     ]
-    matcher = ProductMatcher(
+    matcher = _matcher(
         FakeAliClient(products),
         translator=constant_translator("LED Ring Light Tripod Stand"),
         # Verifier would say AUTO, but nothing should reach it.
@@ -220,7 +231,7 @@ def mapping_image_scorer(by_ali_url: dict[str, float | None]):
 async def test_no_image_scorer_leaves_similarity_none(naver):
     """Default (no scorer): image_similarity stays None, title ranking unchanged."""
     products = [make_product("A1", "LED Ring Light Tripod Stand", "10.00")]
-    matcher = ProductMatcher(
+    matcher = _matcher(
         FakeAliClient(products),
         translator=constant_translator("LED Ring Light Tripod Stand"),
         verifier=constant_verifier(0.9, "same item"),
@@ -244,7 +255,7 @@ async def test_image_scorer_reranks_shortlist(naver):
             "https://img.example/HIGH_IMAGE.jpg": 0.95,
         }
     )
-    matcher = ProductMatcher(
+    matcher = _matcher(
         FakeAliClient(products),
         translator=constant_translator("LED Ring Light Tripod Stand"),
         verifier=constant_verifier(0.9, "same item"),
@@ -262,7 +273,7 @@ async def test_image_scorer_populates_similarity_field(naver):
     """Every plausible candidate gets its image_similarity recorded."""
     products = [make_product("A1", "LED Ring Light Tripod Stand", "10.00")]
     scorer = mapping_image_scorer({"https://img.example/A1.jpg": 0.8})
-    matcher = ProductMatcher(
+    matcher = _matcher(
         FakeAliClient(products),
         translator=constant_translator("LED Ring Light Tripod Stand"),
         verifier=constant_verifier(0.9, "same item"),
@@ -282,7 +293,7 @@ async def test_require_spec_match_drops_mismatched_models():
         make_product("SAME", "Power Bank 20000mAh Fast Charge", "10.00"),
         make_product("OTHER", "Power Bank 10000mAh Mini", "10.00"),
     ]
-    matcher = ProductMatcher(
+    matcher = _matcher(
         FakeAliClient(products),
         translator=constant_translator("power bank 20000mah"),
         verifier=constant_verifier(0.9, "same item"),
@@ -298,7 +309,7 @@ async def test_require_spec_match_drops_mismatched_models():
 async def test_reject_on_low_confidence(naver):
     """A price-plausible product but low verifier confidence -> REJECT."""
     products = [make_product("L1", "LED Ring Light Tripod Stand", "10.00")]
-    matcher = ProductMatcher(
+    matcher = _matcher(
         FakeAliClient(products),
         translator=constant_translator("LED Ring Light Tripod Stand"),
         verifier=constant_verifier(0.2, "different item"),
@@ -315,11 +326,11 @@ async def test_reject_on_low_confidence(naver):
 async def test_price_ratio_filtering_excludes_implausible(naver):
     """Only the price-plausible product survives the coarse filter."""
     products = [
-        make_product("TOO_EXPENSIVE", "LED Ring Light Tripod Stand", "30.00"),  # ratio 1.35
-        make_product("PLAUSIBLE", "LED Ring Light Tripod Stand", "10.00"),  # ratio 0.45
-        make_product("TOO_CHEAP", "LED Ring Light Tripod Stand", "0.50"),  # ratio 0.0225
+        make_product("TOO_EXPENSIVE", "LED Ring Light Tripod Stand", "30.00"),  # ratio 1.5
+        make_product("PLAUSIBLE", "LED Ring Light Tripod Stand", "10.00"),  # ratio 0.5
+        make_product("TOO_CHEAP", "LED Ring Light Tripod Stand", "0.50"),  # ratio 0.025
     ]
-    matcher = ProductMatcher(
+    matcher = _matcher(
         FakeAliClient(products),
         translator=constant_translator("LED Ring Light Tripod Stand"),
         verifier=constant_verifier(0.9, "same item"),
@@ -336,7 +347,7 @@ async def test_price_ratio_filtering_excludes_implausible(naver):
 
 async def test_top_k_limits_verified_candidates(naver):
     """Only ``top_k`` price-plausible products are shortlisted and verified."""
-    # All four are price-plausible (10 USD -> ratio 0.45).  Distinct titles so
+    # All four are price-plausible (10 USD -> ratio 0.5).  Distinct titles so
     # title_similarity ranks them; top_k=2 keeps the two closest to the query.
     products = [
         make_product("P1", "LED Ring Light Tripod Stand", "10.00"),
@@ -344,7 +355,7 @@ async def test_top_k_limits_verified_candidates(naver):
         make_product("P3", "LED Ring Light", "10.00"),
         make_product("P4", "Ring", "10.00"),
     ]
-    matcher = ProductMatcher(
+    matcher = _matcher(
         FakeAliClient(products),
         translator=constant_translator("LED Ring Light Tripod Stand"),
         verifier=constant_verifier(0.9, "same item"),
@@ -359,7 +370,7 @@ async def test_top_k_limits_verified_candidates(naver):
 
 async def test_empty_search_results_reject(naver):
     """No AliExpress results at all -> REJECT with no best candidate."""
-    matcher = ProductMatcher(
+    matcher = _matcher(
         FakeAliClient([]),
         translator=constant_translator("LED Ring Light Tripod Stand"),
         verifier=constant_verifier(0.9, "unused"),
@@ -375,7 +386,7 @@ async def test_empty_search_results_reject(naver):
 async def test_translator_query_is_used_for_search(naver):
     """The translated query is what gets sent to the AliExpress client."""
     client = FakeAliClient([make_product("A1", "LED Ring Light Tripod Stand", "10.00")])
-    matcher = ProductMatcher(
+    matcher = _matcher(
         client,
         translator=constant_translator("led ring light tripod"),
         verifier=constant_verifier(0.9, "same item"),
@@ -393,7 +404,7 @@ async def test_custom_fx_rate_changes_plausibility(naver):
     # At 10 USD with fx 100: ratio = 1000 / 30000 = 0.033 -> below 0.05 bound,
     # so the otherwise-good product is filtered out and the result is REJECT.
     products = [make_product("A1", "LED Ring Light Tripod Stand", "10.00")]
-    matcher = ProductMatcher(
+    matcher = _matcher(
         FakeAliClient(products),
         translator=constant_translator("LED Ring Light Tripod Stand"),
         verifier=constant_verifier(0.9, "same item"),

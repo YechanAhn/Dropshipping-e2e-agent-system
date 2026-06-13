@@ -1,0 +1,404 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1781342995585,
+  "projectRoot": "/Users/yechanahn/.superset/worktrees/Dropshipping-e2e-agent-system/righteous-year",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Python",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "pyproject.toml"
+        ]
+      }
+    ],
+    "frameworks": [
+      {
+        "name": "fastapi",
+        "version": null,
+        "category": "backend"
+      },
+      {
+        "name": "pytest",
+        "version": null,
+        "category": "testing"
+      }
+    ],
+    "packageManager": null,
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": "pytest",
+    "lintCommand": "ruff check",
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "docs",
+      "scripts",
+      "src",
+      "tests"
+    ],
+    "gitBranches": {
+      "defaultBranch": "claude/plan-logistics-automation-VX6iH",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 3,
+      "lastAccessed": 1781342995578,
+      "keyFiles": [
+        "PRD.md",
+        "SETUP_GUIDE.md",
+        "phase_0_checklist.md"
+      ]
+    },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 4,
+      "lastAccessed": 1781342995578,
+      "keyFiles": [
+        "migrate_db.py",
+        "retrain_model.py",
+        "seed_categories.py",
+        "setup_env.sh"
+      ]
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 0,
+      "lastAccessed": 1781342995579,
+      "keyFiles": []
+    },
+    "tests": {
+      "path": "tests",
+      "purpose": "Test files",
+      "fileCount": 2,
+      "lastAccessed": 1781342995579,
+      "keyFiles": [
+        "__init__.py",
+        "conftest.py"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "src/dropagent/pipeline/discovery.py",
+      "accessCount": 30,
+      "lastAccessed": 1781384781999,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/scheduler/jobs.py",
+      "accessCount": 23,
+      "lastAccessed": 1781385576422,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/core/matching/matcher.py",
+      "accessCount": 21,
+      "lastAccessed": 1781385437646,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/test_api.py",
+      "accessCount": 14,
+      "lastAccessed": 1781385754198,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/clients/naver/datalab_api.py",
+      "accessCount": 13,
+      "lastAccessed": 1781351923785,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/test_discovery_pipeline.py",
+      "accessCount": 13,
+      "lastAccessed": 1781370333982,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/test_matching.py",
+      "accessCount": 12,
+      "lastAccessed": 1781385688659,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/core/discovery/momentum.py",
+      "accessCount": 10,
+      "lastAccessed": 1781370768050,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/api/routes/products.py",
+      "accessCount": 10,
+      "lastAccessed": 1781385622649,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/core/discovery/__init__.py",
+      "accessCount": 9,
+      "lastAccessed": 1781370812068,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/clients/naver/models.py",
+      "accessCount": 9,
+      "lastAccessed": 1781384790646,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/pipeline/sourcing.py",
+      "accessCount": 9,
+      "lastAccessed": 1781385523307,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/core/content_generator.py",
+      "accessCount": 7,
+      "lastAccessed": 1781384780575,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/test_sourcing.py",
+      "accessCount": 7,
+      "lastAccessed": 1781385720159,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/test_jobs_wiring.py",
+      "accessCount": 6,
+      "lastAccessed": 1781368938315,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/test_momentum.py",
+      "accessCount": 6,
+      "lastAccessed": 1781369341138,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/core/discovery/specificity.py",
+      "accessCount": 6,
+      "lastAccessed": 1781370768516,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/core/discovery/competition.py",
+      "accessCount": 6,
+      "lastAccessed": 1781384808285,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/core/image_processor.py",
+      "accessCount": 5,
+      "lastAccessed": 1781352360827,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/clients/aliexpress/affiliate_api.py",
+      "accessCount": 5,
+      "lastAccessed": 1781385359771,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/clients/naver/searchad_api.py",
+      "accessCount": 4,
+      "lastAccessed": 1781349342647,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/core/matching/models.py",
+      "accessCount": 4,
+      "lastAccessed": 1781370462734,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/core/matching/vision_verifier.py",
+      "accessCount": 4,
+      "lastAccessed": 1781370767099,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/test_specificity.py",
+      "accessCount": 3,
+      "lastAccessed": 1781370313707,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/clients/llm/ollama.py",
+      "accessCount": 3,
+      "lastAccessed": 1781384792862,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/clients/naver/__init__.py",
+      "accessCount": 2,
+      "lastAccessed": 1781345134563,
+      "type": "file"
+    },
+    {
+      "path": "docs/RESEARCH_discovery.md",
+      "accessCount": 2,
+      "lastAccessed": 1781348977735,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/core/discovery/datalab_momentum.py",
+      "accessCount": 2,
+      "lastAccessed": 1781349343548,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/core/matching/__init__.py",
+      "accessCount": 2,
+      "lastAccessed": 1781351359688,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/test_image_processor.py",
+      "accessCount": 2,
+      "lastAccessed": 1781352375099,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/test_content_generator.py",
+      "accessCount": 2,
+      "lastAccessed": 1781370347074,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/clients/naver/shopping_api.py",
+      "accessCount": 2,
+      "lastAccessed": 1781384782764,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/clients/llm/router.py",
+      "accessCount": 2,
+      "lastAccessed": 1781384791243,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/api/routes/analytics.py",
+      "accessCount": 2,
+      "lastAccessed": 1781385778371,
+      "type": "file"
+    },
+    {
+      "path": "docs/RUNBOOK.md",
+      "accessCount": 1,
+      "lastAccessed": 1781344784148,
+      "type": "file"
+    },
+    {
+      "path": "docs/PLAN_v3.md",
+      "accessCount": 1,
+      "lastAccessed": 1781344784916,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/clients/naver/auth.py",
+      "accessCount": 1,
+      "lastAccessed": 1781344787704,
+      "type": "file"
+    },
+    {
+      "path": "tests/conftest.py",
+      "accessCount": 1,
+      "lastAccessed": 1781344788140,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/test_searchad.py",
+      "accessCount": 1,
+      "lastAccessed": 1781344802979,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/clients/__init__.py",
+      "accessCount": 1,
+      "lastAccessed": 1781344835789,
+      "type": "file"
+    },
+    {
+      "path": "scripts/_probe_datalab.py",
+      "accessCount": 1,
+      "lastAccessed": 1781345758624,
+      "type": "file"
+    },
+    {
+      "path": ".env",
+      "accessCount": 1,
+      "lastAccessed": 1781346162629,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/utils/exceptions.py",
+      "accessCount": 1,
+      "lastAccessed": 1781346394640,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/test_datalab_momentum.py",
+      "accessCount": 1,
+      "lastAccessed": 1781346863230,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/test_competition.py",
+      "accessCount": 1,
+      "lastAccessed": 1781349054436,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/core/category_mapper.py",
+      "accessCount": 1,
+      "lastAccessed": 1781349344116,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/clients/naver/commerce_api.py",
+      "accessCount": 1,
+      "lastAccessed": 1781349351576,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/test_vision_verifier.py",
+      "accessCount": 1,
+      "lastAccessed": 1781368860513,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/test_ollama.py",
+      "accessCount": 1,
+      "lastAccessed": 1781368884395,
+      "type": "file"
+    },
+    {
+      "path": "src/dropagent/api/routes/orders.py",
+      "accessCount": 1,
+      "lastAccessed": 1781371832351,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

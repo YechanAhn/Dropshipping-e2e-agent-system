@@ -359,8 +359,8 @@ class AliExpressAffiliateClient:
             "page_no": page,
             "page_size": min(page_size, 50),
             "tracking_id": self._settings.tracking_id,
-            "target_currency": "USD",
-            "target_language": "en",
+            "target_currency": self._settings.target_currency,
+            "target_language": self._settings.target_language,
             "sort": "SALE_PRICE_ASC",
         }
         if category_id is not None:
@@ -409,8 +409,8 @@ class AliExpressAffiliateClient:
         business_params: dict[str, Any] = {
             "product_ids": ",".join(product_ids[:20]),
             "tracking_id": self._settings.tracking_id,
-            "target_currency": "USD",
-            "target_language": "en",
+            "target_currency": self._settings.target_currency,
+            "target_language": self._settings.target_language,
         }
 
         api_name = "aliexpress.affiliate.productdetail.get"
@@ -449,8 +449,8 @@ class AliExpressAffiliateClient:
             "page_no": page,
             "page_size": 50,
             "tracking_id": self._settings.tracking_id,
-            "target_currency": "USD",
-            "target_language": "en",
+            "target_currency": self._settings.target_currency,
+            "target_language": self._settings.target_language,
         }
 
         api_name = "aliexpress.affiliate.hotproduct.query"

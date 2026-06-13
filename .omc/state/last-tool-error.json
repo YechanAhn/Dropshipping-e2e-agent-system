@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"ls -d .venv venv env 2>/dev/null; which python; head -1 $(which pytest 2>/dev/null) 2>/dev/null; cat pyproject.toml 2>/dev/null | grep -A3 \\\"\\\\[tool.poetry\\\\]\\\\|requires-python\\\\|^name\\\" |...",
+  "error": "Exit code 1\n.venv\npython not found\nname = \"dropagent\"\nversion = \"0.1.0\"\ndescription = \"Dropshipping E2E Agent System - AliExpress to Naver SmartStore\"\nreadme = \"docs/PRD.md\"\nrequires-python = \">=3.11\"\nlicense = { text = \"MIT\" }\n\ndependencies = [\n---\n(eval):1: no matches found: *.cfg",
+  "timestamp": "2026-06-13T21:10:14.346Z",
+  "retry_count": 3
+}

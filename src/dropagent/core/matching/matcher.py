@@ -44,9 +44,6 @@ Verifier = Callable[[NaverProductRef, object], Awaitable[tuple[float, str]]]
 # ``None`` when it cannot be computed). See ``core.image_processor``.
 ImageScorer = Callable[[str, str], Awaitable["float | None"]]
 
-# Default USD -> KRW conversion used when none is supplied.
-DEFAULT_FX_RATE = 1350.0
-
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 # Punctuation stripped from the ends of a whitespace token before spec checks.
 _SPEC_STRIP = ".,;:!?()[]{}\"'/\\|"
@@ -118,8 +115,12 @@ class ProductMatcher:
             given, price-plausible candidates are re-ranked by photo similarity
             before shortlisting, narrowing a broad title match to the same SKU.
             Defaults to ``None`` (title-similarity ranking only, no network).
-        fx_rate: USD -> KRW rate used to convert AliExpress sale prices for the
-            price-ratio plausibility check.
+        fx_rate: Optional explicit USD -> KRW rate for the price-ratio
+            plausibility check on USD-priced candidates.  When ``None`` (the
+            default) the rate is resolved *live* from :class:`ExchangeRateClient`
+            on first use -- there is no hardcoded fallback here.  AliExpress
+            products already priced in KRW (``target_currency=KRW``) skip FX
+            entirely, so this is only consulted for USD-denominated candidates.
     """
 
     def __init__(
@@ -129,16 +130,44 @@ class ProductMatcher:
         translator: Translator | None = None,
         verifier: Verifier | None = None,
         image_scorer: ImageScorer | None = None,
-        fx_rate: float = DEFAULT_FX_RATE,
+        fx_rate: float | None = None,
     ) -> None:
         self._ali_client = ali_client
         self._translator = translator
         self._verifier = verifier
         self._image_scorer = image_scorer
         self._fx_rate = fx_rate
+        # Resolved (possibly live-fetched) USD->KRW rate, cached after first use.
+        self._resolved_fx: float | None = None
         # Lazily-constructed LLM router shared by the default impls so we only
         # ever build (and key-check) it once, and never at construction time.
         self._router: Any | None = None
+
+    async def _get_fx_rate(self) -> float:
+        """
+        Return the USD->KRW rate, resolving it live on first use.
+
+        Honours an explicitly-injected ``fx_rate`` (tests/overrides); otherwise
+        fetches the current rate from :class:`ExchangeRateClient` (which itself
+        falls back to its offline table only if the API is unreachable). Cached
+        for the lifetime of this matcher.
+        """
+        if self._resolved_fx is not None:
+            return self._resolved_fx
+        if self._fx_rate is not None:
+            self._resolved_fx = float(self._fx_rate)
+            return self._resolved_fx
+
+        from dropagent.clients.exchange_rate import ExchangeRateClient
+
+        client = ExchangeRateClient()
+        try:
+            rate = await client.get_rate("USD", "KRW")
+        finally:
+            await client.close()
+        self._resolved_fx = float(rate)
+        logger.info("matching_fx_resolved", usd_krw=self._resolved_fx)
+        return self._resolved_fx
 
     # ------------------------------------------------------------------
     # Lazy default dependencies (LLM-backed; never required at construction)
@@ -254,9 +283,15 @@ class ProductMatcher:
         low, high = price_ratio_bounds
         query_for_similarity = query_en or naver.title_ko
         naver_specs = extract_spec_tokens(naver.title_ko) if require_spec_match else set()
+        # Resolve the live USD->KRW rate only if some candidate isn't already in
+        # KRW (AliExpress target_currency=KRW needs no conversion at all).
+        needs_fx = any(
+            (getattr(p, "currency", "USD") or "USD").upper() != "KRW" for p in products
+        )
+        fx_rate = await self._get_fx_rate() if needs_fx else None
         plausible: list[MatchCandidate] = []
         for product in products:
-            price_ratio = self._price_ratio(product, naver.price)
+            price_ratio = self._price_ratio(product, naver.price, fx_rate)
             if price_ratio is None or not (low <= price_ratio <= high):
                 continue
             ali_title = getattr(product, "title", "")
@@ -315,20 +350,31 @@ class ProductMatcher:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _price_ratio(self, product: Any, naver_price: int) -> float | None:
+    def _price_ratio(
+        self, product: Any, naver_price: int, fx_rate: float | None
+    ) -> float | None:
         """
         Compute ``ali_price_krw / naver_price`` for ``product``.
 
-        Returns ``None`` when the ratio cannot be computed (missing price or a
-        non-positive Naver price), so callers can treat it as implausible.
+        Currency-aware: an AliExpress price already in KRW is used as-is; a
+        USD price is converted with ``fx_rate`` (the live rate resolved by the
+        caller).  Returns ``None`` when the ratio cannot be computed (missing
+        price, non-positive Naver price, or a USD price with no rate available),
+        so callers can treat it as implausible.
         """
         if naver_price <= 0:
             return None
         try:
-            sale_price_usd = Decimal(str(product.price.sale_price))
+            sale_price = Decimal(str(product.price.sale_price))
         except (AttributeError, TypeError, ValueError):
             return None
-        ali_price_krw = float(sale_price_usd) * self._fx_rate
+        currency = (getattr(product, "currency", "USD") or "USD").upper()
+        if currency == "KRW":
+            ali_price_krw = float(sale_price)
+        else:
+            if not fx_rate:
+                return None
+            ali_price_krw = float(sale_price) * fx_rate
         return ali_price_krw / naver_price
 
     @staticmethod

@@ -58,12 +58,25 @@ REF = NaverProductRef(title_ko="무선이어폰", price=30000)
 
 
 def test_estimate_landed_cost():
-    # (5 + 2) * 1350 * 1.10 = 10395
-    assert estimate_landed_cost(_ali("5", "2")) == Decimal("10395")
+    # USD price -> convert with the injected rate: (5 + 2) * 1500 * 1.10 = 11550
+    assert estimate_landed_cost(_ali("5", "2"), fx_rate=Decimal("1500")) == Decimal("11550")
+
+
+def test_estimate_landed_cost_krw_passthrough():
+    # AliExpress already returned KRW (target_currency=KRW) -> NO FX applied.
+    # (7000 + 2000) * 1.10 = 9900, and no fx_rate is required.
+    ali = SimpleNamespace(
+        price=SimpleNamespace(sale_price=Decimal("7000")),
+        shipping_info=SimpleNamespace(cost=Decimal("2000")),
+        currency="KRW",
+    )
+    assert estimate_landed_cost(ali) == Decimal("9900")
 
 
 async def test_ready_path_produces_payload():
-    orch = SourcingOrchestrator(FakeMatcher(_match(MatchStatus.AUTO, _ali("5"))), FakeContent())
+    orch = SourcingOrchestrator(
+        FakeMatcher(_match(MatchStatus.AUTO, _ali("5"))), FakeContent(), fx_rate=Decimal("1500")
+    )
     res = await orch.evaluate(REF, competitor_prices=[28000, 30000, 32000])
     assert res.status == "ready"
     assert res.pricing is not None and res.pricing.feasible
@@ -72,7 +85,9 @@ async def test_ready_path_produces_payload():
 
 
 async def test_review_status_when_match_is_review():
-    orch = SourcingOrchestrator(FakeMatcher(_match(MatchStatus.REVIEW, _ali("5"))), FakeContent())
+    orch = SourcingOrchestrator(
+        FakeMatcher(_match(MatchStatus.REVIEW, _ali("5"))), FakeContent(), fx_rate=Decimal("1500")
+    )
     res = await orch.evaluate(REF, competitor_prices=[28000, 30000, 32000])
     assert res.status == "review"
     assert res.register_payload is not None
@@ -87,8 +102,10 @@ async def test_rejected_when_no_match():
 
 
 async def test_infeasible_when_competition_below_floor():
-    # cheap competitors vs ~10,395 landed -> margin floor unreachable
-    orch = SourcingOrchestrator(FakeMatcher(_match(MatchStatus.AUTO, _ali("5"))), FakeContent())
+    # cheap competitors vs ~11,550 landed -> margin floor unreachable
+    orch = SourcingOrchestrator(
+        FakeMatcher(_match(MatchStatus.AUTO, _ali("5"))), FakeContent(), fx_rate=Decimal("1500")
+    )
     res = await orch.evaluate(REF, competitor_prices=[8000, 9000])
     assert res.status == "infeasible"
     assert res.pricing is not None and res.pricing.feasible is False

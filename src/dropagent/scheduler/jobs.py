@@ -60,8 +60,15 @@ PRICE_MONITOR_SAMPLE_SIZE = 20
 # 자동 등록 임계값 (priority_score). 이 점수 이상 + status 'approved' 만 등록.
 MIN_REGISTER_PRIORITY_SCORE = 60.0
 
-# 알리 -> 원화 환산에 사용하는 기본 환율 (가격 기록용).
-DEFAULT_FX_RATE = Decimal("1350")
+async def _live_usd_krw() -> Decimal:
+    """현재 USD->KRW 환율을 라이브로 조회 (실패 시 클라이언트 내부 폴백). 하드코딩 금지."""
+    from dropagent.clients.exchange_rate import ExchangeRateClient
+
+    client = ExchangeRateClient()
+    try:
+        return await client.get_rate("USD", "KRW")
+    finally:
+        await client.close()
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -617,6 +624,10 @@ async def monitor_price_changes_job() -> None:
                         )
                         details = []
 
+                    # AliExpress prices arrive already in KRW (target_currency=KRW),
+                    # so ``price_ali`` is stored in won; record the live USD->KRW of
+                    # the day as audit metadata (never a hardcoded rate).
+                    audit_rate = await _live_usd_krw()
                     for detail in details:
                         product = by_ali_id.get(detail.product_id)
                         if product is None:
@@ -631,7 +642,7 @@ async def monitor_price_changes_job() -> None:
                                 product_id=product.id,
                                 price_ali=current_price,
                                 price_naver=product.price_naver or Decimal("0"),
-                                exchange_rate=DEFAULT_FX_RATE,
+                                exchange_rate=audit_rate,
                             )
                             product.price_ali = current_price
                         except Exception as record_exc:

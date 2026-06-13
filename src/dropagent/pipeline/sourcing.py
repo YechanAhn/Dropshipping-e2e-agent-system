@@ -30,7 +30,6 @@ from dropagent.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-DEFAULT_FX_RATE = Decimal("1350")
 # Extra multiplier over (price+shipping) for FX spread / CS / return reserve.
 DEFAULT_IMPORT_BUFFER = Decimal("0.10")
 
@@ -65,13 +64,22 @@ def _attr(obj: Any, *names: str, default: Any = None) -> Any:
 def estimate_landed_cost(
     ali_product: Any,
     *,
-    fx_rate: Decimal = DEFAULT_FX_RATE,
+    fx_rate: Decimal | None = None,
     import_buffer: Decimal = DEFAULT_IMPORT_BUFFER,
 ) -> Decimal:
     """
     Estimate the all-in source cost in KRW for an AliExpress product.
 
-    landed = (sale_price_usd + shipping_cost_usd) * fx_rate * (1 + import_buffer)
+    Currency-aware. When the product is already priced in KRW (AliExpress
+    ``target_currency=KRW``) no FX is applied::
+
+        landed = (sale + shipping) * (1 + import_buffer)
+
+    Otherwise the price is treated as USD and converted with ``fx_rate`` (the
+    live USD->KRW rate the caller resolved); a non-KRW price with no ``fx_rate``
+    is a programming error::
+
+        landed = (sale_usd + shipping_usd) * fx_rate * (1 + import_buffer)
     """
     sale = _attr(ali_product, "price", "sale_price", default=None)
     if sale is None:
@@ -79,7 +87,17 @@ def estimate_landed_cost(
     ship = _attr(ali_product, "shipping_info", "cost", default=0)
     sale_d = Decimal(str(sale or 0))
     ship_d = Decimal(str(ship or 0))
-    return ((sale_d + ship_d) * fx_rate * (Decimal("1") + import_buffer)).quantize(Decimal("1"))
+    base = sale_d + ship_d
+
+    currency = (_attr(ali_product, "currency", default="USD") or "USD").upper()
+    if currency != "KRW":
+        if fx_rate is None:
+            raise ValueError(
+                "fx_rate is required to convert a non-KRW AliExpress price to KRW"
+            )
+        base = base * Decimal(str(fx_rate))
+
+    return (base * (Decimal("1") + import_buffer)).quantize(Decimal("1"))
 
 
 class SourcingOrchestrator:
@@ -90,15 +108,34 @@ class SourcingOrchestrator:
         matcher: ProductMatcher,
         content_generator: ContentGenerator,
         *,
-        fx_rate: Decimal = DEFAULT_FX_RATE,
+        fx_rate: Decimal | None = None,
         import_buffer: Decimal = DEFAULT_IMPORT_BUFFER,
         target_margin: Decimal = DEFAULT_TARGET_MARGIN,
     ) -> None:
         self._matcher = matcher
         self._content = content_generator
+        # ``None`` -> resolve the live USD->KRW rate lazily on first non-KRW use.
         self._fx_rate = fx_rate
+        self._resolved_fx: Decimal | None = None
         self._import_buffer = import_buffer
         self._target_margin = target_margin
+
+    async def _get_fx_rate(self) -> Decimal:
+        """Return the USD->KRW rate, resolving it live on first use (cached)."""
+        if self._resolved_fx is not None:
+            return self._resolved_fx
+        if self._fx_rate is not None:
+            self._resolved_fx = Decimal(str(self._fx_rate))
+            return self._resolved_fx
+
+        from dropagent.clients.exchange_rate import ExchangeRateClient
+
+        client = ExchangeRateClient()
+        try:
+            self._resolved_fx = await client.get_rate("USD", "KRW")
+        finally:
+            await client.close()
+        return self._resolved_fx
 
     async def evaluate(
         self,
@@ -115,9 +152,9 @@ class SourcingOrchestrator:
             return result
 
         ali = match.best.ali_product
-        landed = estimate_landed_cost(
-            ali, fx_rate=self._fx_rate, import_buffer=self._import_buffer
-        )
+        currency = (getattr(ali, "currency", "USD") or "USD").upper()
+        fx = None if currency == "KRW" else await self._get_fx_rate()
+        landed = estimate_landed_cost(ali, fx_rate=fx, import_buffer=self._import_buffer)
         result.landed_cost = landed
 
         pricing = optimal_price(landed, competitor_prices, target_margin=self._target_margin)

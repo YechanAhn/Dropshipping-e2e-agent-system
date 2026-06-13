@@ -16,7 +16,11 @@ import httpx
 import pytest
 
 from dropagent.api.app import create_app
-from dropagent.api.deps import get_analytics_repo, get_order_repo, get_product_repo
+from dropagent.api.deps import (
+    get_analytics_repo,
+    get_order_repo,
+    get_product_repo,
+)
 from dropagent.db.models import Order, Product
 
 # ─── In-memory fakes ────────────────────────────────────────────────────
@@ -101,7 +105,7 @@ def _make_product(product_id: int, status: str) -> Product:
         product_name_ko=f"테스트 상품 {product_id}",
         category_ali="Electronics",
         category_naver="디지털/가전",
-        price_ali=Decimal("10.00"),
+        price_ali=Decimal("15000.00"),  # AliExpress price already in KRW (target_currency=KRW)
         price_naver=Decimal("19900.00"),
         margin_rate=Decimal("30.00"),
         priority_score=Decimal("80.00"),
@@ -198,9 +202,9 @@ async def test_get_product_found(client: httpx.AsyncClient) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["id"] == 1
-    # ALI price is USD; the API also exposes a KRW view (10.00 * 1350 = 13500).
-    assert float(body["price_ali"]) == 10.0
-    assert float(body["price_ali_krw"]) == 13500.0
+    # ALI price arrives already in KRW (target_currency=KRW); price_ali_krw mirrors it.
+    assert float(body["price_ali"]) == 15000.0
+    assert float(body["price_ali_krw"]) == 15000.0
 
 
 async def test_get_product_not_found(client: httpx.AsyncClient) -> None:
