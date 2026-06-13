@@ -312,6 +312,8 @@ class ContentGenerator:
         price: int,
         *,
         stock: int = 999,
+        own_brand: str = "",
+        own_manufacturer: str | None = None,
         **extra: Any,
     ) -> dict[str, Any]:
         """네이버 커머스 register_product용 payload 초안을 조립합니다.
@@ -353,6 +355,12 @@ class ContentGenerator:
                 "optionalImages": [{"url": url} for url in optional_images],
             },
             "sellerTags": seller_tags,
+            # Outbound identity: register under own/no brand so the new listing
+            # stays 비매칭 단독 (avoids 가격비교 catalog auto-match + 상표 risk).
+            # The 상품명 is already LLM-rewritten + brand-avoided upstream. Draft
+            # field names per the schema caveat above; keep HITL-reviewed.
+            "brand": own_brand,
+            "manufacturer": own_manufacturer if own_manufacturer is not None else own_brand,
         }
 
         # 호출자가 제공한 추가 필드 병합 (originProduct 레벨)

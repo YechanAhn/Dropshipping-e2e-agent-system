@@ -40,6 +40,7 @@ from dropagent.core.discovery.specificity import (
     DEFAULT_BRAND_STOPWORDS,
     is_branded,
     is_specific,
+    titles_to_seeds,
 )
 from dropagent.utils.exceptions import APIError
 from dropagent.utils.logging import get_logger
@@ -51,7 +52,11 @@ SEED_BATCH_SIZE = 5
 
 # Naver Shopping productType codes for "가격비교 비매칭 일반상품" (standalone, not
 # matched into a price-comparison catalog) -- the dropshipping-friendly kind.
-# Everything else (대표/매칭) means catalog price-war exposure.
+# Everything else (대표/매칭) means catalog price-war exposure. The "단독" column
+# spans all 4 상품군 (일반/중고/단종/예정), hence {2, 5, 8, 11}.
+# Verified live (Shopping Search API): head term "무선이어폰" skews type 1
+# (가격비교 대표), long-tail "골전도 이어폰" skews type 2 (비매칭 단독) -- exactly
+# the catalog-vs-standalone split this filter assumes.
 STANDALONE_PRODUCT_TYPES = frozenset({2, 5, 8, 11})
 
 # Defaults
@@ -301,6 +306,48 @@ class DiscoveryPipeline:
 
         survivors.sort(key=lambda c: c.opportunity, reverse=True)
         return survivors[:top_n]
+
+    # -- Alternate entry: category browsing (official-API cold-start) ---------
+
+    async def discover_from_category(
+        self,
+        category_query: str,
+        *,
+        display: int = DEFAULT_SHOPPING_DISPLAY,
+        standalone_only: bool = True,
+        max_seeds: int = 10,
+        **discover_kwargs: object,
+    ) -> list[DiscoveryCandidate]:
+        """
+        Seed discovery by browsing what actually sells in a Shopping category.
+
+        Naver exposes no "popular keywords by category" API, so instead of the
+        manual seed list we browse the category via Shopping Search, prefer
+        비매칭 단독 (standalone, dropshipping-friendly) products, clean their
+        titles into non-branded seeds, and run the normal ``discover`` flow on
+        them (RESEARCH_discovery.md §4 strategy 2 -- official API, no scraping).
+
+        Args:
+            category_query: A broad category/keyword to browse.
+            display: How many products to pull from Shopping Search.
+            standalone_only: Prefer 단독(2,5,8,11) products when any are present.
+            max_seeds: Cap on extracted seed keywords.
+            **discover_kwargs: Forwarded to ``discover`` (thresholds, top_n, ...).
+
+        Returns:
+            Ranked ``DiscoveryCandidate`` list (empty if no usable seeds).
+        """
+        result = await self._shopping.search(query=category_query, display=display)
+        items = list(result.items)
+        if standalone_only:
+            standalone = [it for it in items if it.product_type in STANDALONE_PRODUCT_TYPES]
+            items = standalone or items  # fall back to all if none are standalone
+
+        seeds = titles_to_seeds([it.title for it in items], max_seeds=max_seeds)
+        logger.info("discovery_category_seeds", category=category_query, seed_count=len(seeds))
+        if not seeds:
+            return []
+        return await self.discover(seeds, **discover_kwargs)
 
     async def _attach_momentum(self, candidate: DiscoveryCandidate) -> None:
         assert self._momentum_provider is not None

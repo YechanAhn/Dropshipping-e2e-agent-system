@@ -17,7 +17,10 @@ could improve this but is intentionally avoided to keep deps light.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 # A keyword counts as "specific" if it has >= this many whitespace tokens ...
 SPECIFIC_MIN_TOKENS = 2
@@ -76,3 +79,48 @@ def is_branded(keyword: str, brands: Iterable[str] = DEFAULT_BRAND_STOPWORDS) ->
     """True if the keyword contains a brand / IP stopword (substring, de-spaced)."""
     norm = normalize(keyword)
     return any(normalize(b) in norm for b in brands if b)
+
+
+def strip_html(text: str) -> str:
+    """Remove HTML tags (Naver Shopping titles wrap matched terms in ``<b>``)."""
+    return _HTML_TAG_RE.sub(" ", text)
+
+
+def strip_brand_tokens(text: str, brands: Iterable[str] = DEFAULT_BRAND_STOPWORDS) -> str:
+    """
+    Drop whitespace tokens that are brand / IP terms (token-level, exact match).
+
+    Used to keep an OUTBOUND 상품명 free of the source brand so a new listing is
+    less likely to be auto-matched into a 가격비교 catalog (price war) or raise an
+    IP/상표 issue. Token-level (not substring) so it never mangles generic words.
+    """
+    brand_set = {normalize(b) for b in brands if b}
+    kept = [tok for tok in strip_html(text).split() if normalize(tok) not in brand_set]
+    return " ".join(kept).strip()
+
+
+def titles_to_seeds(
+    titles: Iterable[str],
+    *,
+    brands: Iterable[str] = DEFAULT_BRAND_STOPWORDS,
+    max_seeds: int = 10,
+) -> list[str]:
+    """
+    Turn Naver Shopping product titles into de-duplicated seed keywords.
+
+    Cleans HTML + brand tokens from each title so a category browse ("what is
+    actually selling here") yields fresh, non-branded seeds for Search Ad
+    expansion -- the official-API category-drilldown path (RESEARCH_discovery.md
+    §4 strategy 2), since Naver exposes no "popular keywords by category" API.
+    """
+    seeds: list[str] = []
+    seen: set[str] = set()
+    for title in titles:
+        cleaned = strip_brand_tokens(title, brands)
+        key = normalize(cleaned)
+        if cleaned and key not in seen:
+            seen.add(key)
+            seeds.append(cleaned)
+        if len(seeds) >= max_seeds:
+            break
+    return seeds

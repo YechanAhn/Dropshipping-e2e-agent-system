@@ -231,3 +231,41 @@ async def test_rising_momentum_applies_opportunity_bonus():
     expected = max(0.0, min(1.0, base + momentum_opportunity_bonus(cand.momentum.label)))
     assert cand.opportunity == pytest.approx(expected)
     assert cand.opportunity > base  # rising was promoted
+
+
+class RecordingSearchAd(FakeSearchAd):
+    """FakeSearchAd that records the hint keywords it was expanded from."""
+
+    def __init__(self, stats):
+        super().__init__(stats)
+        self.hints: list[list[str]] = []
+
+    async def get_keyword_stats(self, hint_keywords, include_hint_keywords=True):
+        self.hints.append(list(hint_keywords))
+        return self._stats
+
+
+async def test_discover_from_category_browses_standalone_and_seeds():
+    """Category browse: standalone titles -> cleaned seeds -> Search Ad expansion."""
+    browse_items = [
+        NaverShoppingItem(
+            title="삼성 <b>골전도 러닝 이어폰</b>", lowest_price=29000, product_type=2
+        ),
+        NaverShoppingItem(title="가격비교 대표 상품", lowest_price=10000, product_type=1),  # catalog -> skipped
+    ]
+    # Search Ad returns a more specific RELATED keyword (a child of the seed), so
+    # it survives the specificity gate (the seed itself would be dropped as a head term).
+    stats = [KeywordStat(keyword="골전도 러닝 이어폰 방수", monthly_pc=8000, monthly_mobile=12000)]
+    table = {
+        "이어폰": NaverShoppingResult(items=browse_items, total=999),
+        "골전도 러닝 이어폰 방수": _result(5_000, product_type=2, price=29_000),
+    }
+    searchad = RecordingSearchAd(stats)
+    pipe = DiscoveryPipeline(searchad, FakeShopping(table))
+
+    results = await pipe.discover_from_category("이어폰", min_monthly_volume=1_000)
+
+    # Only the standalone product became a seed, with its brand stripped.
+    assert searchad.hints  # discover() ran
+    assert searchad.hints[0] == ["골전도 러닝 이어폰"]  # catalog item skipped, '삼성' removed
+    assert [r.keyword for r in results] == ["골전도 러닝 이어폰 방수"]

@@ -5,6 +5,9 @@ from dropagent.core.discovery.specificity import (
     is_head_term,
     is_specific,
     normalize,
+    strip_brand_tokens,
+    strip_html,
+    titles_to_seeds,
 )
 
 SEEDS = ["무선 이어폰", "차량용 거치대"]
@@ -69,3 +72,25 @@ def test_is_branded_false_for_generic_keywords():
 def test_is_branded_custom_list():
     assert is_branded("테팔 프라이팬", brands={"테팔"}) is True
     assert is_branded("일반 프라이팬", brands={"테팔"}) is False
+
+
+# --- title cleaning -> seeds (category browsing) -----------------------------
+
+
+def test_strip_html_removes_b_tags():
+    assert strip_html("무선 <b>이어폰</b>").split() == ["무선", "이어폰"]
+
+
+def test_strip_brand_tokens_drops_brand_words_keeps_generic():
+    assert strip_brand_tokens("삼성 갤럭시 버즈4 무선 이어폰") == "버즈4 무선 이어폰"
+    assert strip_brand_tokens("골전도 러닝 이어폰") == "골전도 러닝 이어폰"
+
+
+def test_titles_to_seeds_cleans_dedupes_and_caps():
+    titles = [
+        "삼성 갤럭시 <b>무선이어폰</b>",
+        "삼성 갤럭시 <b>무선이어폰</b>",  # duplicate after cleaning
+        "QCY 블루투스 이어폰",
+    ]
+    assert titles_to_seeds(titles, max_seeds=10) == ["무선이어폰", "QCY 블루투스 이어폰"]
+    assert titles_to_seeds(["aaa 1", "bbb 2", "ccc 3"], max_seeds=2) == ["aaa 1", "bbb 2"]

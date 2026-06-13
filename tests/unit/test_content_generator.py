@@ -289,6 +289,21 @@ class TestBuildRegisterPayload:
         assert origin["stockQuantity"] == 50
         assert origin["deliveryInfo"] == {"deliveryType": "DELIVERY"}
 
+    async def test_payload_outbound_identity_defaults_to_no_brand(self, generator):
+        # Default: register under no brand so the listing stays 비매칭 단독.
+        content = await generator.generate(_make_ali_object())
+        origin = generator.build_register_payload(content, price=19900)["originProduct"]
+        assert origin["brand"] == ""
+        assert origin["manufacturer"] == ""
+
+    async def test_payload_outbound_identity_custom_own_brand(self, generator):
+        content = await generator.generate(_make_ali_object())
+        origin = generator.build_register_payload(
+            content, price=19900, own_brand="마이브랜드"
+        )["originProduct"]
+        assert origin["brand"] == "마이브랜드"
+        assert origin["manufacturer"] == "마이브랜드"  # defaults to own_brand
+
 
 # =====================================================================
 # Construction without injected deps (no API keys needed at __init__)
