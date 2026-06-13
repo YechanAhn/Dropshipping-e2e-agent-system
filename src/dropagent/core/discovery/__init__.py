@@ -20,7 +20,12 @@ from .datalab_momentum import (
     extract_ratios,
     make_datalab_momentum_provider,
 )
-from .momentum import MomentumLabel, MomentumResult, momentum_score
+from .momentum import (
+    MomentumLabel,
+    MomentumResult,
+    momentum_opportunity_bonus,
+    momentum_score,
+)
 from .specificity import (
     DEFAULT_BRAND_STOPWORDS,
     is_branded,
@@ -38,6 +43,7 @@ __all__ = [
     "MomentumLabel",
     "MomentumResult",
     "momentum_score",
+    "momentum_opportunity_bonus",
     "DATALAB_MOMENTUM_WEEKS",
     "extract_ratios",
     "make_datalab_momentum_provider",

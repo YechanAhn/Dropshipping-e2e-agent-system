@@ -31,7 +31,11 @@ from dropagent.core.discovery.competition import (
     grade_competition,
     opportunity_score,
 )
-from dropagent.core.discovery.momentum import MomentumResult, momentum_score
+from dropagent.core.discovery.momentum import (
+    MomentumResult,
+    momentum_opportunity_bonus,
+    momentum_score,
+)
 from dropagent.core.discovery.specificity import (
     DEFAULT_BRAND_STOPWORDS,
     is_branded,
@@ -279,6 +283,12 @@ class DiscoveryPipeline:
                 sourcing_penalty=cand.catalog_ratio,
                 weights=self._weights,
             )
+            # Promote emerging/uncrowded labels (NEW/RISING), demote FALLING.
+            if cand.momentum is not None:
+                cand.opportunity = max(
+                    0.0,
+                    min(1.0, cand.opportunity + momentum_opportunity_bonus(cand.momentum.label)),
+                )
             cand.evidence = {
                 "monthly_volume": cand.monthly_volume,
                 "product_count": cand.product_count,

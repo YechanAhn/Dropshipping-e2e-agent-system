@@ -2,6 +2,8 @@
 
 from datetime import date
 
+import pytest
+
 from dropagent.clients.naver.models import (
     NaverShoppingItem,
     NaverShoppingResult,
@@ -199,3 +201,33 @@ async def test_measure_competition_captures_representative_image():
     await pipe.measure_competition(cand)
 
     assert cand.image_url == "https://x/standalone.jpg"  # standalone preferred over catalog
+
+
+async def test_rising_momentum_applies_opportunity_bonus():
+    """A RISING candidate's opportunity gets the label bonus on top of the score."""
+    from dropagent.core.discovery.competition import DEFAULT_WEIGHTS, opportunity_score
+    from dropagent.core.discovery.momentum import momentum_opportunity_bonus
+
+    stats = [KeywordStat(keyword="떠오르는 신상 키워드", monthly_pc=20000, monthly_mobile=30000)]
+    table = {"떠오르는 신상 키워드": _result(25_000, product_type=2, price=10_000)}
+    rising = [float(x) for x in ([20.0] * 52 + [26, 30, 34, 38, 42, 46, 48, 50])]
+
+    async def provider(keyword: str) -> list[float]:
+        return rising
+
+    pipe = DiscoveryPipeline(FakeSearchAd(stats), FakeShopping(table), momentum_provider=provider)
+    results = await pipe.discover(["seed"], min_monthly_volume=1_000)
+    cand = results[0]
+    assert cand.momentum is not None and cand.momentum.label.value == "rising"
+
+    base = opportunity_score(
+        cand.monthly_volume,
+        cand.competition,
+        momentum=cand.momentum.score / 100.0,
+        margin_potential=None,
+        sourcing_penalty=cand.catalog_ratio,
+        weights=DEFAULT_WEIGHTS,
+    )
+    expected = max(0.0, min(1.0, base + momentum_opportunity_bonus(cand.momentum.label)))
+    assert cand.opportunity == pytest.approx(expected)
+    assert cand.opportunity > base  # rising was promoted

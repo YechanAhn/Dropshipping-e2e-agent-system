@@ -3,6 +3,7 @@
 from dropagent.core.discovery.momentum import (
     MomentumLabel,
     linreg_slope_r2,
+    momentum_opportunity_bonus,
     momentum_score,
     rolling_zscore,
     window_ratio,
@@ -83,3 +84,13 @@ def test_empty_series_is_safe():
     res = momentum_score([])
     assert res.label == MomentumLabel.FLAT
     assert res.score == 0.0
+
+
+def test_momentum_opportunity_bonus_promotes_emerging_and_demotes_falling():
+    new = momentum_opportunity_bonus(MomentumLabel.NEW)
+    rising = momentum_opportunity_bonus(MomentumLabel.RISING)
+    assert new > rising > 0.0
+    assert momentum_opportunity_bonus(MomentumLabel.FLAT) == 0.0
+    assert momentum_opportunity_bonus(MomentumLabel.SEASONAL) == 0.0
+    assert momentum_opportunity_bonus(MomentumLabel.FALLING) < 0.0
+    assert momentum_opportunity_bonus(None) == 0.0

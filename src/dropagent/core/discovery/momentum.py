@@ -208,3 +208,22 @@ def momentum_score(series: list[float]) -> MomentumResult:
         is_seasonal=is_seasonal,
         is_breakout=is_breakout,
     )
+
+
+# Additive opportunity-score nudge by momentum label: surface emerging,
+# uncrowded pockets (NEW breakout > RISING) and demote clear decliners. Small
+# and on top of the weighted numeric momentum term already in opportunity_score.
+OPPORTUNITY_BONUS: dict[MomentumLabel, float] = {
+    MomentumLabel.NEW: 0.08,
+    MomentumLabel.RISING: 0.05,
+    MomentumLabel.SEASONAL: 0.0,
+    MomentumLabel.FLAT: 0.0,
+    MomentumLabel.FALLING: -0.05,
+}
+
+
+def momentum_opportunity_bonus(label: MomentumLabel | None) -> float:
+    """Additive opportunity nudge for a momentum label (0.0 if unknown)."""
+    if label is None:
+        return 0.0
+    return OPPORTUNITY_BONUS.get(label, 0.0)
