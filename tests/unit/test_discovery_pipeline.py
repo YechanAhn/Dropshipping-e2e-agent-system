@@ -135,8 +135,52 @@ async def test_expand_demand_dedupes_and_floors():
         KeywordStat(keyword="below", monthly_pc=100, monthly_mobile=100),
     ]
     pipe = DiscoveryPipeline(FakeSearchAd(stats), FakeShopping({}))
-    cands = await pipe.expand_demand(["seed"], min_monthly_volume=1_000)
+    # exclude_head_terms=False to keep this test focused on dedup/floor behavior
+    # (the short ASCII keywords would otherwise be dropped by the specificity gate).
+    cands = await pipe.expand_demand(
+        ["seed"], min_monthly_volume=1_000, exclude_head_terms=False
+    )
 
     keywords = [c.keyword for c in cands]
     assert keywords == ["dup"]              # 'below' floored out, 'dup' deduped
     assert cands[0].monthly_volume == 20000  # keeps the higher-volume duplicate
+
+
+async def test_discover_excludes_head_terms_keeps_longtail():
+    """The default specificity gate drops seed/head terms and keeps long-tail."""
+    stats = [
+        # head term == seed -> dropped
+        KeywordStat(keyword="무선 이어폰", monthly_pc=40000, monthly_mobile=60000),
+        # bare single-token short head term -> dropped
+        KeywordStat(keyword="이어폰", monthly_pc=40000, monthly_mobile=60000),
+        # branded -> dropped
+        KeywordStat(keyword="에어팟 케이스", monthly_pc=10000, monthly_mobile=10000),
+        # long-tail child -> kept
+        KeywordStat(keyword="골전도 러닝 이어폰", monthly_pc=8000, monthly_mobile=12000),
+    ]
+    table = {"골전도 러닝 이어폰": _result(5_000, product_type=2, price=29_000)}
+    pipe = DiscoveryPipeline(FakeSearchAd(stats), FakeShopping(table))
+
+    results = await pipe.discover(["무선 이어폰"], min_monthly_volume=1_000)
+
+    keywords = [r.keyword for r in results]
+    assert keywords == ["골전도 러닝 이어폰"]
+
+
+async def test_discover_goldilocks_ceiling_drops_high_volume():
+    """max_monthly_volume drops keywords above the band even if specific."""
+    stats = [
+        KeywordStat(keyword="골전도 러닝 이어폰", monthly_pc=3000, monthly_mobile=2000),   # 5k
+        KeywordStat(keyword="유아용 식판 세트", monthly_pc=40000, monthly_mobile=60000),  # 100k
+    ]
+    table = {
+        "골전도 러닝 이어폰": _result(2_000, product_type=2, price=29_000),
+        "유아용 식판 세트": _result(20_000, product_type=2, price=12_000),
+    }
+    pipe = DiscoveryPipeline(FakeSearchAd(stats), FakeShopping(table))
+
+    results = await pipe.discover(["seed"], min_monthly_volume=1_000, max_monthly_volume=10_000)
+
+    keywords = [r.keyword for r in results]
+    assert "골전도 러닝 이어폰" in keywords
+    assert "유아용 식판 세트" not in keywords  # 100k > 10k ceiling

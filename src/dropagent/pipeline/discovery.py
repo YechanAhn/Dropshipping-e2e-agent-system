@@ -32,6 +32,11 @@ from dropagent.core.discovery.competition import (
     opportunity_score,
 )
 from dropagent.core.discovery.momentum import MomentumResult, momentum_score
+from dropagent.core.discovery.specificity import (
+    DEFAULT_BRAND_STOPWORDS,
+    is_branded,
+    is_specific,
+)
 from dropagent.utils.exceptions import APIError
 from dropagent.utils.logging import get_logger
 
@@ -47,7 +52,16 @@ STANDALONE_PRODUCT_TYPES = frozenset({2, 5, 8, 11})
 
 # Defaults
 DEFAULT_MIN_MONTHLY_VOLUME = 1_000
-DEFAULT_MAX_COMPETITION = 3.0
+# Goldilocks demand band: ``None`` = no upper bound (rely on competition to
+# demote head terms, per docs/RESEARCH_discovery.md). Set a ceiling to bias
+# toward mid-volume long-tail pockets.
+DEFAULT_MAX_MONTHLY_VOLUME: int | None = None
+# Tightened toward the seller-tool "<1.0 = 황금키워드" consensus (was 3.0/보통);
+# demand-first defaults to GOOD/EXCELLENT only. Still per-call tunable.
+DEFAULT_MAX_COMPETITION = 1.0
+# Drop broad head terms (대표키워드) + branded keywords, keeping long-tail
+# (세부키워드) children. Tunable per call.
+DEFAULT_EXCLUDE_HEAD_TERMS = True
 DEFAULT_MAX_CANDIDATES = 200
 DEFAULT_TOP_N = 30
 DEFAULT_SHOPPING_DISPLAY = 40
@@ -111,10 +125,26 @@ class DiscoveryPipeline:
         seed_keywords: list[str],
         *,
         min_monthly_volume: int = DEFAULT_MIN_MONTHLY_VOLUME,
+        max_monthly_volume: int | None = DEFAULT_MAX_MONTHLY_VOLUME,
+        exclude_head_terms: bool = DEFAULT_EXCLUDE_HEAD_TERMS,
+        brand_stopwords: frozenset[str] | None = None,
         max_candidates: int = DEFAULT_MAX_CANDIDATES,
     ) -> list[DiscoveryCandidate]:
-        """Expand seeds into related keywords with absolute monthly volume."""
+        """
+        Expand seeds into related keywords with absolute monthly volume.
+
+        Args:
+            seed_keywords: Seed (head) keywords to expand via Search Ad.
+            min_monthly_volume: Demand floor (drop below).
+            max_monthly_volume: Optional goldilocks ceiling (drop above).
+            exclude_head_terms: Drop the seed head terms / single-token broad
+                keywords and branded keywords, keeping long-tail children.
+            brand_stopwords: Override brand stoplist (defaults to
+                ``DEFAULT_BRAND_STOPWORDS``) when ``exclude_head_terms``.
+            max_candidates: Cap on candidates carried into S2.
+        """
         by_keyword: dict[str, DiscoveryCandidate] = {}
+        brands = brand_stopwords if brand_stopwords is not None else DEFAULT_BRAND_STOPWORDS
 
         for i in range(0, len(seed_keywords), SEED_BATCH_SIZE):
             batch = seed_keywords[i : i + SEED_BATCH_SIZE]
@@ -126,6 +156,12 @@ class DiscoveryPipeline:
 
             for s in stats:
                 if not s.keyword or s.monthly_total < min_monthly_volume:
+                    continue
+                if max_monthly_volume is not None and s.monthly_total > max_monthly_volume:
+                    continue
+                if exclude_head_terms and (
+                    not is_specific(s.keyword, seed_keywords) or is_branded(s.keyword, brands)
+                ):
                     continue
                 existing = by_keyword.get(s.keyword)
                 if existing is None or s.monthly_total > existing.monthly_volume:
@@ -173,7 +209,10 @@ class DiscoveryPipeline:
         seed_keywords: list[str],
         *,
         min_monthly_volume: int = DEFAULT_MIN_MONTHLY_VOLUME,
+        max_monthly_volume: int | None = DEFAULT_MAX_MONTHLY_VOLUME,
         max_competition: float = DEFAULT_MAX_COMPETITION,
+        exclude_head_terms: bool = DEFAULT_EXCLUDE_HEAD_TERMS,
+        brand_stopwords: frozenset[str] | None = None,
         max_candidates: int = DEFAULT_MAX_CANDIDATES,
         top_n: int = DEFAULT_TOP_N,
     ) -> list[DiscoveryCandidate]:
@@ -183,7 +222,11 @@ class DiscoveryPipeline:
         Args:
             seed_keywords: Seed keywords/categories to expand from.
             min_monthly_volume: Drop keywords below this absolute monthly volume.
+            max_monthly_volume: Optional goldilocks ceiling (drop above).
             max_competition: Drop keywords whose 경쟁강도 exceeds this.
+            exclude_head_terms: Drop broad head terms / branded keywords, keeping
+                long-tail (세부키워드) children.
+            brand_stopwords: Override the brand stoplist used when excluding.
             max_candidates: Cap on expanded candidates carried into S2.
             top_n: Number of ranked opportunities to return.
 
@@ -193,6 +236,9 @@ class DiscoveryPipeline:
         candidates = await self.expand_demand(
             seed_keywords,
             min_monthly_volume=min_monthly_volume,
+            max_monthly_volume=max_monthly_volume,
+            exclude_head_terms=exclude_head_terms,
+            brand_stopwords=brand_stopwords,
             max_candidates=max_candidates,
         )
         logger.info("discovery_expanded", count=len(candidates))

@@ -21,6 +21,12 @@ from .datalab_momentum import (
     make_datalab_momentum_provider,
 )
 from .momentum import MomentumLabel, MomentumResult, momentum_score
+from .specificity import (
+    DEFAULT_BRAND_STOPWORDS,
+    is_branded,
+    is_head_term,
+    is_specific,
+)
 
 __all__ = [
     "CompetitionGrade",
@@ -35,4 +41,8 @@ __all__ = [
     "DATALAB_MOMENTUM_WEEKS",
     "extract_ratios",
     "make_datalab_momentum_provider",
+    "DEFAULT_BRAND_STOPWORDS",
+    "is_branded",
+    "is_head_term",
+    "is_specific",
 ]
