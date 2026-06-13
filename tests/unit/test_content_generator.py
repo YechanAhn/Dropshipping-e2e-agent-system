@@ -25,6 +25,37 @@ from dropagent.core.content_generator import (
 # =====================================================================
 
 
+# 11-섹션(data-sec) 키 — DETAIL_PAGE_PROMPT 구조와 동일해야 한다.
+DETAIL_SECTIONS: tuple[str, ...] = (
+    "hook",
+    "problem",
+    "benefit",
+    "detail_spec",
+    "usage",
+    "size_option",
+    "trust",
+    "shipping",
+    "cert_as",
+    "faq",
+    "cta_review",
+)
+
+
+def _canned_detail_html(*, with_markers: bool = True, with_avoid: bool = False) -> str:
+    """11개 <section data-sec="..."> 를 담은 결정적 상세페이지 HTML 픽스처."""
+    sections: list[str] = []
+    for sec in DETAIL_SECTIONS:
+        body = f"<h2>{sec} 소제목</h2><p>{sec} 본문입니다.</p>"
+        if sec == "usage" and with_markers:
+            body += "<!-- VIDEO_SLOT -->"
+        if sec == "detail_spec" and with_markers:
+            body += '<img src="https://img.example.com/main.jpg"><!-- NEEDS_IMAGE_CLEANUP -->'
+        if sec == "cta_review" and with_avoid:
+            body += "<p>지금이 최저가 정품 1위 상품이에요.</p>"
+        sections.append(f'<section data-sec="{sec}">{body}</section>')
+    return "".join(sections)
+
+
 class FakeLLMRouter:
     """LLMRouter의 공개 async 메서드 시그니처를 흉내내는 페이크.
 
@@ -38,6 +69,7 @@ class FakeLLMRouter:
         translated_name: str = "무선 블루투스 이어폰 TWS 노이즈캔슬링",
         keywords: list[str] | None = None,
         description: str = "<div><h2>상품 상세</h2><p>고품질 무선 이어폰입니다.</p></div>",
+        detail_html: str | None = None,
     ) -> None:
         self.translated_name = translated_name
         self.keywords = keywords if keywords is not None else [
@@ -48,9 +80,11 @@ class FakeLLMRouter:
             "TWS",
         ]
         self.description = description
+        self.detail_html = detail_html if detail_html is not None else _canned_detail_html()
         self.calls: dict[str, list[tuple]] = {
             "translate": [],
             "describe": [],
+            "detail": [],
             "keywords": [],
         }
 
@@ -61,6 +95,10 @@ class FakeLLMRouter:
     async def generate_description(self, product_info: dict) -> str:
         self.calls["describe"].append((product_info,))
         return self.description
+
+    async def generate_detail_page(self, product_info: dict) -> str:
+        self.calls["detail"].append((product_info,))
+        return self.detail_html
 
     async def extract_keywords(self, product_name: str, category: str) -> list[str]:
         self.calls["keywords"].append((product_name, category))
@@ -168,12 +206,75 @@ class TestGenerate:
         assert category == "Consumer Electronics"
 
     async def test_description_receives_price(self, generator, fake_router):
-        """상세설명 생성 시 price.sale_price 가 product_info로 전달."""
+        """상세페이지 생성 시 price.sale_price 가 product_info로 전달."""
         await generator.generate(_make_ali_object())
-        assert fake_router.calls["describe"]
-        (product_info,) = fake_router.calls["describe"][0]
+        assert fake_router.calls["detail"]
+        (product_info,) = fake_router.calls["detail"][0]
         assert product_info["price_krw"] == "8.50"
         assert product_info["product_name_ko"] == "무선 블루투스 이어폰 TWS 노이즈캔슬링"
+
+
+# =====================================================================
+# generate() — 11-섹션 상세페이지 HTML
+# =====================================================================
+
+
+class TestDetailPage:
+    """generate() 가 11-섹션 상세페이지 HTML을 description_html 에 담는지 검증."""
+
+    async def test_all_eleven_sections_present(self, generator):
+        """11개 <section data-sec="..."> 키가 모두 description_html 에 존재."""
+        content = await generator.generate(_make_ali_object())
+        for sec in DETAIL_SECTIONS:
+            assert f'data-sec="{sec}"' in content.description_html
+
+    async def test_detail_page_called_not_legacy_description(self, generator, fake_router):
+        """레거시 generate_description 이 아니라 generate_detail_page 가 호출된다."""
+        await generator.generate(_make_ali_object())
+        assert fake_router.calls["detail"]
+        assert not fake_router.calls["describe"]
+
+    async def test_detail_receives_image_urls_and_options(self, generator, fake_router):
+        """수집한 이미지 URL과 직렬화된 옵션이 product_info 로 전달."""
+        await generator.generate(_make_ali_object())
+        (product_info,) = fake_router.calls["detail"][0]
+        assert "https://img.example.com/main.jpg" in product_info["image_urls"]
+        assert "https://img.example.com/opt-black.jpg" in product_info["image_urls"]
+        # _make_ali_object 의 옵션: name=Color, value=Black
+        assert "Color: Black" in product_info["options"]
+
+    async def test_options_empty_when_absent(self, generator, fake_router):
+        """옵션이 없으면 options 문자열은 빈 값."""
+        await generator.generate(_make_ali_dict())  # options=[]
+        (product_info,) = fake_router.calls["detail"][0]
+        assert product_info["options"] == ""
+
+    async def test_markers_preserved(self):
+        """NEEDS_IMAGE_CLEANUP / VIDEO_SLOT 마커는 HTML 에 보존된다."""
+        router = FakeLLMRouter(detail_html=_canned_detail_html(with_markers=True))
+        gen = ContentGenerator(llm_router=router, category_mapper=CategoryMapper())
+        content = await gen.generate(_make_ali_object())
+        assert "<!-- NEEDS_IMAGE_CLEANUP -->" in content.description_html
+        assert "<!-- VIDEO_SLOT -->" in content.description_html
+
+    async def test_avoid_words_stripped_from_html(self):
+        """상세페이지 HTML 에서 상표/위험 단어가 제거되고 마커는 유지된다."""
+        router = FakeLLMRouter(
+            detail_html=_canned_detail_html(with_markers=True, with_avoid=True)
+        )
+        gen = ContentGenerator(llm_router=router, category_mapper=CategoryMapper())
+        content = await gen.generate(_make_ali_object())
+        assert "최저가" not in content.description_html
+        assert "정품" not in content.description_html
+        assert "1위" not in content.description_html
+        # 제거 사실이 warnings 에 기록
+        assert any("상세페이지" in w for w in content.warnings)
+        # 마커는 그대로 보존
+        assert "<!-- NEEDS_IMAGE_CLEANUP -->" in content.description_html
+        assert "<!-- VIDEO_SLOT -->" in content.description_html
+        # 11 섹션은 그대로 유지
+        for sec in DETAIL_SECTIONS:
+            assert f'data-sec="{sec}"' in content.description_html
 
 
 # =====================================================================
@@ -193,7 +294,7 @@ class TestInputTypes:
         assert isinstance(content, GeneratedContent)
         assert content.naver_category_name == "디지털/가전"
         # 중첩 dict price 에서 sale_price 추출 확인
-        (product_info,) = fake_router.calls["describe"][0]
+        (product_info,) = fake_router.calls["detail"][0]
         assert product_info["price_krw"] == "13.00"
         assert "https://img.example.com/ring.jpg" in content.source_image_urls
 

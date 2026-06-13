@@ -29,6 +29,7 @@ from .prompts import (
     CATEGORY_MATCHING_PROMPT,
     CS_CLASSIFICATION_PROMPT,
     CS_RESPONSE_PROMPT,
+    DETAIL_PAGE_PROMPT,
     KEYWORD_EXTRACTION_PROMPT,
     PRODUCT_DESCRIPTION_PROMPT,
     PRODUCT_TRANSLATION_PROMPT,
@@ -61,6 +62,7 @@ class LLMRouter:
     TASK_MODELS: dict[str, str] = {
         "translation": "claude-sonnet-4-20250514",
         "description": "claude-sonnet-4-20250514",
+        "detailpage": "claude-sonnet-4-20250514",
         "category_match": "claude-3-5-haiku-20241022",
         "keyword_extract": "claude-3-5-haiku-20241022",
         "cs_response": "claude-sonnet-4-20250514",
@@ -72,6 +74,7 @@ class LLMRouter:
     TASK_MAX_TOKENS: dict[str, int] = {
         "translation": 256,
         "description": 4096,
+        "detailpage": 8000,
         "category_match": 256,
         "keyword_extract": 512,
         "cs_response": 1024,
@@ -350,6 +353,35 @@ class LLMRouter:
             original_description=product_info.get("original_description", ""),
         )
         return await self.route("description", prompt)
+
+    async def generate_detail_page(self, product_info: dict) -> str:
+        """PASONA 흐름의 11-섹션 상세페이지 HTML을 생성합니다.
+
+        DETAIL_PAGE_PROMPT 의 {{...}} 플레이스홀더를 product_info 값으로
+        치환(.replace)하여 프롬프트를 완성합니다. str.format 대신 .replace 를
+        사용하여 HTML/CSS 중괄호 충돌을 피합니다.
+
+        Args:
+            product_info: 상품 정보 딕셔너리.
+                사용 키: product_name_ko, product_name_en, category, price_krw,
+                         attributes, original_description, image_urls, options
+
+        Returns:
+            11개 <section> 으로 구성된 단일 HTML 문자열.
+        """
+        prompt = DETAIL_PAGE_PROMPT
+        for key in (
+            "product_name_ko",
+            "product_name_en",
+            "category",
+            "price_krw",
+            "attributes",
+            "original_description",
+            "image_urls",
+            "options",
+        ):
+            prompt = prompt.replace("{{" + key + "}}", str(product_info.get(key, "")))
+        return await self.route("detailpage", prompt)
 
     async def match_category(
         self,

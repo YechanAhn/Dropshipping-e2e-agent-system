@@ -246,7 +246,11 @@ class ContentGenerator:
             )
             title_ko = title_ko[:MAX_TITLE_LENGTH].rstrip()
 
-        # 3) 상세설명 생성
+        # 이미지 URL 수집 (텍스트 우선 전략이지만 원본 이미지는 그대로 활용).
+        # 상세페이지 프롬프트에 입력으로 넣기 위해 설명 생성 전에 수집한다.
+        source_image_urls = self._collect_image_urls(ali_product)
+
+        # 3) 상세설명(11-섹션 PASONA HTML) 생성
         price_krw = _extract_sale_price(ali_product)
         product_info: dict[str, Any] = {
             "product_name_en": title_en,
@@ -255,9 +259,19 @@ class ContentGenerator:
             "price_krw": str(price_krw) if price_krw is not None else "",
             "attributes": self._summarize_attributes(ali_product),
             "original_description": description_src,
+            "image_urls": ", ".join(source_image_urls),
+            "options": self._summarize_options(ali_product),
         }
-        description_html = await self.llm_router.generate_description(product_info)
+        description_html = await self.llm_router.generate_detail_page(product_info)
         description_html = str(description_html or "")
+
+        # HTML 가드레일: 상표/위험 단어를 제거하되, HITL/후처리용 마커
+        # (<!-- NEEDS_IMAGE_CLEANUP -->, <!-- VIDEO_SLOT -->)는 보존한다.
+        description_html, html_avoid = _strip_avoid_words(description_html)
+        if html_avoid:
+            warnings.append(
+                f"상세페이지에서 상표/위험 단어 제거: {', '.join(html_avoid)}"
+            )
 
         # 4) 키워드 추출
         raw_keywords = await self.llm_router.extract_keywords(
@@ -283,9 +297,6 @@ class ContentGenerator:
                 continue
             safe_keywords.append(kw)
         keywords = safe_keywords
-
-        # 이미지 URL 수집 (텍스트 우선 전략이지만 원본 이미지는 그대로 활용)
-        source_image_urls = self._collect_image_urls(ali_product)
 
         logger.info(
             "content_generated",
@@ -413,6 +424,30 @@ class ContentGenerator:
                 # 너무 길어지지 않도록 상위 10개만
                 preview = ", ".join(option_values[:10])
                 parts.append(f"옵션: {preview}")
+
+        return " / ".join(parts)
+
+    @staticmethod
+    def _summarize_options(ali_product: Any) -> str:
+        """옵션/사이즈 데이터를 상세페이지 프롬프트용 문자열로 직렬화합니다.
+
+        AliProduct 가 노출하는 options(name/value 등)를 "name: value" 형태로
+        연결합니다. 옵션이 없으면 빈 문자열을 반환합니다.
+        """
+        options = _get_attr(ali_product, "options")
+        if not options:
+            return ""
+
+        parts: list[str] = []
+        for opt in options:
+            name = _get_attr(opt, "name")
+            value = _get_attr(opt, "value")
+            if name and value:
+                parts.append(f"{name}: {value}")
+            elif value:
+                parts.append(str(value))
+            elif name:
+                parts.append(str(name))
 
         return " / ".join(parts)
 
