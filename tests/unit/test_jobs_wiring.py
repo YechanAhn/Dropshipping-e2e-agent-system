@@ -101,6 +101,15 @@ def test_naver_demand_clients_have_called_methods() -> None:
     assert hasattr(NaverShoppingClient, "search")
 
 
+def test_naver_datalab_client_has_called_methods() -> None:
+    from dropagent.clients.naver.datalab_api import NaverDataLabClient
+
+    # collect_naver_trends_job constructs this and calls get_keyword_trend()
+    # (via the momentum provider) then close() in its finally block.
+    assert hasattr(NaverDataLabClient, "get_keyword_trend")
+    assert hasattr(NaverDataLabClient, "close")
+
+
 def test_pipeline_and_agents_importable_with_methods() -> None:
     assert hasattr(DiscoveryPipeline, "discover")
     assert hasattr(SourcingOrchestrator, "evaluate_candidate")
@@ -150,6 +159,21 @@ def test_jobs_source_references_real_components() -> None:
         "TelegramNotifier",
     ):
         assert real in source, f"expected real reference missing: {real!r}"
+
+
+def test_collect_naver_trends_wires_datalab_momentum() -> None:
+    """collect_naver_trends_job must actually attach the DataLab momentum provider.
+
+    Guards against a Potemkin regression where the job constructs the pipeline
+    without ``momentum_provider=`` (S4 silently disabled in production).
+    """
+    from dropagent.core.discovery.datalab_momentum import make_datalab_momentum_provider
+
+    source = inspect.getsource(jobs)
+    assert "NaverDataLabClient" in source
+    assert "make_datalab_momentum_provider" in source
+    assert "momentum_provider=" in source
+    assert callable(make_datalab_momentum_provider)
 
 
 # ─── 4. scheduler.runner imports cleanly (its 8 imports resolve) ────────

@@ -17,11 +17,13 @@ from decimal import Decimal
 from dropagent.agents.order_manager import OrderManager
 from dropagent.clients.aliexpress.affiliate_api import AliExpressAffiliateClient
 from dropagent.clients.naver.commerce_api import NaverCommerceClient
+from dropagent.clients.naver.datalab_api import NaverDataLabClient
 from dropagent.clients.naver.searchad_api import NaverSearchAdClient
 from dropagent.clients.naver.shopping_api import NaverShoppingClient
 from dropagent.clients.telegram_bot import TelegramNotifier
 from dropagent.config import get_settings
 from dropagent.core.content_generator import ContentGenerator
+from dropagent.core.discovery.datalab_momentum import make_datalab_momentum_provider
 from dropagent.core.idempotency import IdempotencyManager
 from dropagent.core.matching import ProductMatcher
 from dropagent.db.repositories.analytics_repo import AnalyticsRepository
@@ -227,8 +229,14 @@ async def collect_naver_trends_job() -> None:
 
         searchad_client = NaverSearchAdClient(settings.searchad)
         shopping_client = NaverShoppingClient(settings.naver)
+        datalab_client = NaverDataLabClient(settings.naver)
+        momentum_provider = make_datalab_momentum_provider(datalab_client)
         try:
-            pipeline = DiscoveryPipeline(searchad_client, shopping_client)
+            pipeline = DiscoveryPipeline(
+                searchad_client,
+                shopping_client,
+                momentum_provider=momentum_provider,
+            )
             candidates = await pipeline.discover(SEED_KEYWORDS, top_n=30)
             logger.info("discovery_candidates", job_type=job_type, count=len(candidates))
 
@@ -254,6 +262,7 @@ async def collect_naver_trends_job() -> None:
         finally:
             await searchad_client.close()
             await shopping_client.close()
+            await datalab_client.close()
 
         await _complete_job(idempotency_key, {"trend_count": trend_count})
 

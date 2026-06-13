@@ -1,8 +1,17 @@
 """Unit tests for the demand-first discovery pipeline (with mocked clients)."""
 
-from dropagent.clients.naver.models import NaverShoppingItem, NaverShoppingResult
+from datetime import date
+
+from dropagent.clients.naver.models import (
+    NaverShoppingItem,
+    NaverShoppingResult,
+    NaverTrendGroup,
+    NaverTrendItem,
+    NaverTrendResult,
+)
 from dropagent.clients.naver.searchad_api import KeywordStat
 from dropagent.core.discovery.competition import CompetitionGrade
+from dropagent.core.discovery.datalab_momentum import make_datalab_momentum_provider
 from dropagent.pipeline.discovery import DiscoveryPipeline
 
 
@@ -79,6 +88,40 @@ async def test_discover_uses_momentum_provider():
         return rising_series
 
     pipe = DiscoveryPipeline(FakeSearchAd(stats), FakeShopping(table), momentum_provider=provider)
+    results = await pipe.discover(["seed"], min_monthly_volume=1_000)
+
+    assert results[0].momentum is not None
+    assert results[0].evidence["momentum"] == "rising"
+
+
+async def test_discover_with_real_datalab_adapter():
+    """The real ``make_datalab_momentum_provider`` plugs into the pipeline E2E."""
+    stats = [KeywordStat(keyword="rising_kw", monthly_pc=20000, monthly_mobile=30000)]
+    table = {"rising_kw": _result(25_000, product_type=2, price=10_000)}
+    rising = [float(x) for x in ([20.0] * 52 + [26, 30, 34, 38, 42, 46, 48, 50])]
+
+    class FakeDataLab:
+        async def get_keyword_trend(self, keywords, start_date, end_date, time_unit="month"):
+            return NaverTrendResult(
+                results=[
+                    NaverTrendGroup(
+                        title=keywords[0],
+                        keywords=keywords,
+                        data=[
+                            NaverTrendItem(period=str(i), ratio=r)
+                            for i, r in enumerate(rising)
+                        ],
+                    )
+                ]
+            )
+
+        async def close(self):
+            return None
+
+    provider = make_datalab_momentum_provider(FakeDataLab(), today=date(2026, 6, 13))
+    pipe = DiscoveryPipeline(
+        FakeSearchAd(stats), FakeShopping(table), momentum_provider=provider
+    )
     results = await pipe.discover(["seed"], min_monthly_volume=1_000)
 
     assert results[0].momentum is not None

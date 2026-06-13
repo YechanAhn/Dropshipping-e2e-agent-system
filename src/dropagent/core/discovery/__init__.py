@@ -15,6 +15,11 @@ from .competition import (
     grade_competition,
     opportunity_score,
 )
+from .datalab_momentum import (
+    DATALAB_MOMENTUM_WEEKS,
+    extract_ratios,
+    make_datalab_momentum_provider,
+)
 from .momentum import MomentumLabel, MomentumResult, momentum_score
 
 __all__ = [
@@ -27,4 +32,7 @@ __all__ = [
     "MomentumLabel",
     "MomentumResult",
     "momentum_score",
+    "DATALAB_MOMENTUM_WEEKS",
+    "extract_ratios",
+    "make_datalab_momentum_provider",
 ]
