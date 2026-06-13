@@ -27,6 +27,7 @@ from dropagent.core.discovery.datalab_momentum import make_datalab_momentum_prov
 from dropagent.core.idempotency import IdempotencyManager
 from dropagent.core.image_processor import make_image_scorer
 from dropagent.core.matching import ProductMatcher
+from dropagent.core.matching.vision_verifier import make_vision_verifier
 from dropagent.db.repositories.analytics_repo import AnalyticsRepository
 from dropagent.db.repositories.order_repo import OrderRepository
 from dropagent.db.repositories.product_repo import ProductRepository
@@ -394,9 +395,14 @@ async def auto_register_products_job() -> None:
         ali_client = AliExpressAffiliateClient(settings.aliexpress)
         commerce_client = NaverCommerceClient(settings.naver)
         try:
-            # Image scorer narrows a coarse title match to the same photo/SKU
-            # using the image URLs the official/affiliate APIs already return.
-            matcher = ProductMatcher(ali_client, image_scorer=make_image_scorer())
+            # Image scorer (dHash) cheaply re-ranks candidates by photo; the
+            # multimodal verifier (local Gemma via Ollama) then confirms same-SKU
+            # identity. Both fail safe -> human review, never crash the job.
+            matcher = ProductMatcher(
+                ali_client,
+                image_scorer=make_image_scorer(),
+                verifier=make_vision_verifier(),
+            )
             content_generator = ContentGenerator()
             orchestrator = SourcingOrchestrator(matcher, content_generator)
 

@@ -189,6 +189,18 @@ def test_auto_register_wires_image_scorer() -> None:
     assert callable(make_image_scorer)
 
 
+def test_auto_register_wires_vision_verifier() -> None:
+    """The registration job's matcher is wired with the multimodal verifier."""
+    from dropagent.core.matching.vision_verifier import make_vision_verifier
+
+    source = inspect.getsource(jobs)
+    assert "make_vision_verifier" in source
+    assert "verifier=" in source
+    # the matcher actually accepts the kwarg the job passes
+    assert "verifier" in inspect.signature(ProductMatcher.__init__).parameters
+    assert callable(make_vision_verifier)
+
+
 # ─── 4. scheduler.runner imports cleanly (its 8 imports resolve) ────────
 
 
