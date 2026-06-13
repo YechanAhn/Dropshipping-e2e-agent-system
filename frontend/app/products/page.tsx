@@ -170,12 +170,17 @@ export default function ProductsPage() {
                           <p className="font-medium text-ink truncate max-w-[180px]" title={name}>{name}</p>
                           <p className="text-xs text-muted mt-0.5">{product.category_naver ?? product.category_ali ?? '—'}</p>
                         </td>
-                        <td className="py-3 px-4 text-muted">{formatKRW(product.price_ali)}</td>
+                        <td className="py-3 px-4">
+                          <span className="text-ink">{formatKRW(product.price_ali_krw)}</span>
+                          {product.price_ali != null && (
+                            <span className="block text-xs text-muted mt-0.5">{`$${product.price_ali.toFixed(2)}`}</span>
+                          )}
+                        </td>
                         <td className="py-3 px-4 text-ink font-medium">{formatKRW(product.price_naver)}</td>
                         <td className="py-3 px-4">
                           <span className={[
                             'text-sm font-semibold',
-                            (product.margin_rate ?? 0) >= 30 ? 'text-success' : (product.margin_rate ?? 0) >= 15 ? 'text-warning' : 'text-danger',
+                            (product.margin_rate ?? 0) >= 0.3 ? 'text-success' : (product.margin_rate ?? 0) >= 0.15 ? 'text-warning' : 'text-danger',
                           ].join(' ')}>
                             {formatPercent(product.margin_rate)}
                           </span>

@@ -6,7 +6,8 @@ export interface ProductOut {
   product_name_ko: string | null;
   category_ali: string | null;
   category_naver: string | null;
-  price_ali: number | null;
+  price_ali: number | null; // AliExpress sale price, in USD
+  price_ali_krw: number | null; // AliExpress price converted to KRW (server-computed)
   price_naver: number | null;
   margin_rate: number | null;
   priority_score: number | null;

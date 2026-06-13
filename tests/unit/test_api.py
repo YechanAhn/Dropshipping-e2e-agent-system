@@ -196,7 +196,11 @@ async def test_list_products_filtered_by_status(client: httpx.AsyncClient) -> No
 async def test_get_product_found(client: httpx.AsyncClient) -> None:
     resp = await client.get("/products/1")
     assert resp.status_code == 200
-    assert resp.json()["id"] == 1
+    body = resp.json()
+    assert body["id"] == 1
+    # ALI price is USD; the API also exposes a KRW view (10.00 * 1350 = 13500).
+    assert float(body["price_ali"]) == 10.0
+    assert float(body["price_ali_krw"]) == 13500.0
 
 
 async def test_get_product_not_found(client: httpx.AsyncClient) -> None:

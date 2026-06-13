@@ -9,7 +9,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, computed_field
 
 from dropagent.api.deps import ProductRepoDep
 from dropagent.db.models import Product
@@ -19,6 +19,11 @@ router = APIRouter(prefix="/products", tags=["products"])
 # Status values used by the approval actions.
 STATUS_APPROVED = "approved"
 STATUS_REJECTED = "rejected"
+
+# AliExpress prices are stored in USD (the affiliate sale price). Expose a KRW
+# view for the dashboard at a fixed reference rate matching the pipeline's
+# DEFAULT_FX_RATE. (Live FX via ExchangeRateClient can replace this later.)
+USD_TO_KRW = Decimal("1350")
 
 
 class ProductOut(BaseModel):
@@ -33,7 +38,7 @@ class ProductOut(BaseModel):
     product_name_ko: str | None = None
     category_ali: str | None = None
     category_naver: str | None = None
-    price_ali: Decimal | None = None
+    price_ali: Decimal | None = None  # AliExpress sale price, in USD
     price_naver: Decimal | None = None
     margin_rate: Decimal | None = None
     priority_score: Decimal | None = None
@@ -41,6 +46,14 @@ class ProductOut(BaseModel):
     ops_cost_score: Decimal | None = None
     demand_score: Decimal | None = None
     status: str
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def price_ali_krw(self) -> Decimal | None:
+        """AliExpress price converted to KRW at the fixed reference rate."""
+        if self.price_ali is None:
+            return None
+        return (self.price_ali * USD_TO_KRW).quantize(Decimal("1"))
 
 
 @router.get("/", response_model=list[ProductOut])
