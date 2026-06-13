@@ -93,3 +93,29 @@ async def test_infeasible_when_competition_below_floor():
     assert res.status == "infeasible"
     assert res.pricing is not None and res.pricing.feasible is False
     assert res.register_payload is None
+
+
+async def test_evaluate_candidate_threads_image_url():
+    """evaluate_candidate carries the discovery image into NaverProductRef."""
+    from dropagent.pipeline.discovery import DiscoveryCandidate
+
+    captured: dict = {}
+
+    class CapturingMatcher:
+        async def match(self, naver, **_):
+            captured["ref"] = naver
+            return _match(MatchStatus.REJECT, None)
+
+    orch = SourcingOrchestrator(CapturingMatcher(), FakeContent())
+    cand = DiscoveryCandidate(
+        keyword="골전도 러닝 이어폰",
+        monthly_volume=10_000,
+        price_median=29_000,
+        image_url="http://img/naver.jpg",
+    )
+
+    await orch.evaluate_candidate(cand)
+
+    assert captured["ref"].title_ko == "골전도 러닝 이어폰"
+    assert captured["ref"].image_url == "http://img/naver.jpg"
+    assert captured["ref"].price == 29_000

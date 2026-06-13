@@ -147,6 +147,7 @@ class SourcingOrchestrator:
         naver_ref = NaverProductRef(
             title_ko=candidate.keyword,
             price=candidate.price_median or 0,
+            image_url=candidate.image_url,
             category=candidate.evidence.get("grade", "") if candidate.evidence else "",
         )
         prices = competitor_prices if competitor_prices is not None else (

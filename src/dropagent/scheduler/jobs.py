@@ -25,6 +25,7 @@ from dropagent.config import get_settings
 from dropagent.core.content_generator import ContentGenerator
 from dropagent.core.discovery.datalab_momentum import make_datalab_momentum_provider
 from dropagent.core.idempotency import IdempotencyManager
+from dropagent.core.image_processor import make_image_scorer
 from dropagent.core.matching import ProductMatcher
 from dropagent.db.repositories.analytics_repo import AnalyticsRepository
 from dropagent.db.repositories.order_repo import OrderRepository
@@ -393,7 +394,9 @@ async def auto_register_products_job() -> None:
         ali_client = AliExpressAffiliateClient(settings.aliexpress)
         commerce_client = NaverCommerceClient(settings.naver)
         try:
-            matcher = ProductMatcher(ali_client)
+            # Image scorer narrows a coarse title match to the same photo/SKU
+            # using the image URLs the official/affiliate APIs already return.
+            matcher = ProductMatcher(ali_client, image_scorer=make_image_scorer())
             content_generator = ContentGenerator()
             orchestrator = SourcingOrchestrator(matcher, content_generator)
 

@@ -176,6 +176,19 @@ def test_collect_naver_trends_wires_datalab_momentum() -> None:
     assert callable(make_datalab_momentum_provider)
 
 
+def test_auto_register_wires_image_scorer() -> None:
+    """The registration job's matcher is wired with the image scorer (SKU narrowing)."""
+    from dropagent.core.image_processor import make_image_scorer
+    from dropagent.core.matching import ProductMatcher
+
+    source = inspect.getsource(jobs)
+    assert "make_image_scorer" in source
+    assert "image_scorer=" in source
+    # the matcher actually accepts the kwarg the job passes
+    assert "image_scorer" in inspect.signature(ProductMatcher.__init__).parameters
+    assert callable(make_image_scorer)
+
+
 # ─── 4. scheduler.runner imports cleanly (its 8 imports resolve) ────────
 
 

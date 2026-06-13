@@ -82,6 +82,7 @@ class DiscoveryCandidate:
     grade: CompetitionGrade = CompetitionGrade.SATURATED
     catalog_ratio: float = 0.0
     price_median: int = 0
+    image_url: str = ""
     comp_idx: str = ""
     volume_masked: bool = False
     momentum: MomentumResult | None = None
@@ -199,6 +200,15 @@ class DiscoveryPipeline:
             candidate.catalog_ratio = round(1.0 - standalone / len(result.items), 4)
             prices = [it.lowest_price for it in result.items if it.lowest_price > 0]
             candidate.price_median = int(statistics.median(prices)) if prices else 0
+            # Representative photo for downstream image matching: prefer a
+            # 비매칭 단독 (standalone) item, else any item with an image.
+            standalone_images = [
+                it.image
+                for it in result.items
+                if it.product_type in STANDALONE_PRODUCT_TYPES and it.image
+            ]
+            any_images = [it.image for it in result.items if it.image]
+            candidate.image_url = next(iter(standalone_images or any_images), "")
 
         return candidate
 

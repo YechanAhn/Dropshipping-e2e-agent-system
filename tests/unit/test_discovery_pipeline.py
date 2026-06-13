@@ -12,7 +12,7 @@ from dropagent.clients.naver.models import (
 from dropagent.clients.naver.searchad_api import KeywordStat
 from dropagent.core.discovery.competition import CompetitionGrade
 from dropagent.core.discovery.datalab_momentum import make_datalab_momentum_provider
-from dropagent.pipeline.discovery import DiscoveryPipeline
+from dropagent.pipeline.discovery import DiscoveryCandidate, DiscoveryPipeline
 
 
 class FakeSearchAd:
@@ -184,3 +184,18 @@ async def test_discover_goldilocks_ceiling_drops_high_volume():
     keywords = [r.keyword for r in results]
     assert "골전도 러닝 이어폰" in keywords
     assert "유아용 식판 세트" not in keywords  # 100k > 10k ceiling
+
+
+async def test_measure_competition_captures_representative_image():
+    """measure_competition records a representative photo, preferring 비매칭 단독."""
+    items = [
+        NaverShoppingItem(lowest_price=12000, product_type=1, image="https://x/catalog.jpg"),
+        NaverShoppingItem(lowest_price=9000, product_type=2, image="https://x/standalone.jpg"),
+    ]
+    table = {"골전도 이어폰": NaverShoppingResult(items=items, total=5_000)}
+    pipe = DiscoveryPipeline(FakeSearchAd([]), FakeShopping(table))
+    cand = DiscoveryCandidate(keyword="골전도 이어폰", monthly_volume=10_000)
+
+    await pipe.measure_competition(cand)
+
+    assert cand.image_url == "https://x/standalone.jpg"  # standalone preferred over catalog
