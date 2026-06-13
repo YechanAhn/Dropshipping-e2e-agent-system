@@ -118,3 +118,19 @@ async def test_make_image_scorer_matches_image_similarity():
     png = _png_bytes(_gradient())
     scorer = make_image_scorer(fetch=_fetcher({"a": png, "b": png}))
     assert await scorer("a", "b") == 1.0
+
+
+async def test_make_image_scorer_caches_hashes_per_url():
+    png = _png_bytes(_gradient())
+    calls: list[str] = []
+
+    async def counting_fetch(url: str) -> bytes:
+        calls.append(url)
+        return png
+
+    scorer = make_image_scorer(fetch=counting_fetch)
+    await scorer("naver", "ali_a")
+    await scorer("naver", "ali_b")  # naver must NOT be re-fetched
+
+    assert calls.count("naver") == 1
+    assert sorted(calls) == ["ali_a", "ali_b", "naver"]

@@ -412,8 +412,13 @@ class TestExtractSpecTokens:
     def test_extracts_capacity_and_skips_non_digit_tokens(self):
         assert extract_spec_tokens("Power Bank 20000mAh Type-C") == {"20000mah"}
 
-    def test_extracts_model_number(self):
-        assert extract_spec_tokens("JR-T03 Bluetooth Earbuds") == {"t03"}
+    def test_extracts_model_number_keeps_hyphen(self):
+        # Hyphenated model numbers stay intact so WH-1000XM5 != WF-1000XM5.
+        assert extract_spec_tokens("JR-T03 Bluetooth Earbuds") == {"jr-t03"}
+        assert extract_spec_tokens("Sony WH-1000XM5 vs WF-1000XM5") == {
+            "wh-1000xm5",
+            "wf-1000xm5",
+        }
 
     def test_extracts_multiple_specs(self):
         assert extract_spec_tokens("4K Action Cam 64GB") == {"4k", "64gb"}

@@ -131,10 +131,35 @@ async def image_similarity(
     return hash_similarity(hash_a, hash_b, bits=hash_size * hash_size)
 
 
-def make_image_scorer(*, fetch: ImageFetcher = fetch_image_bytes) -> ImageScorer:
-    """Build an ``(url_a, url_b) -> similarity|None`` scorer for ``ProductMatcher``."""
+def make_image_scorer(
+    *,
+    fetch: ImageFetcher = fetch_image_bytes,
+    hash_size: int = DEFAULT_HASH_SIZE,
+) -> ImageScorer:
+    """
+    Build an ``(url_a, url_b) -> similarity|None`` scorer for ``ProductMatcher``.
+
+    Hashes are cached per scorer instance keyed by URL, so the (constant) Naver
+    image and any repeated AliExpress image are fetched + hashed only once per
+    matching run rather than once per candidate comparison.
+    """
+    cache: dict[str, int | None] = {}
+
+    async def _hash(url: str) -> int | None:
+        if url in cache:
+            return cache[url]
+        data = await fetch(url)
+        digest = dhash_from_bytes(data, hash_size) if data is not None else None
+        cache[url] = digest
+        return digest
 
     async def _scorer(url_a: str, url_b: str) -> float | None:
-        return await image_similarity(url_a, url_b, fetch=fetch)
+        if not url_a or not url_b:
+            return None
+        hash_a = await _hash(url_a)
+        hash_b = await _hash(url_b)
+        if hash_a is None or hash_b is None:
+            return None
+        return hash_similarity(hash_a, hash_b, bits=hash_size * hash_size)
 
     return _scorer

@@ -48,9 +48,8 @@ ImageScorer = Callable[[str, str], Awaitable["float | None"]]
 DEFAULT_FX_RATE = 1350.0
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
-# A spec/model token is an alphanumeric token containing at least one digit
-# (model numbers like 'jr-t03', capacities like '20000mah', '500ml', '4k').
-_SPEC_TOKEN_RE = re.compile(r"[a-z0-9]*\d[a-z0-9]*")
+# Punctuation stripped from the ends of a whitespace token before spec checks.
+_SPEC_STRIP = ".,;:!?()[]{}\"'/\\|"
 
 
 def _tokenize(text: str) -> set[str]:
@@ -60,13 +59,20 @@ def _tokenize(text: str) -> set[str]:
 
 def extract_spec_tokens(text: str) -> set[str]:
     """
-    Extract model/spec tokens (alphanumerics containing a digit) from a title.
+    Extract model/spec tokens (whitespace tokens containing a digit) from a title.
 
     These are strong product-identity locks -- e.g. '20000mah', 'jr-t03', '4k'
     -- that survive KO->EN translation, so a shared spec token between a Naver
-    and an AliExpress title is high-precision evidence of the same SKU.
+    and an AliExpress title is high-precision evidence of the same SKU. Hyphenated
+    model numbers stay intact ('wh-1000xm5' != 'wf-1000xm5'); tokens with no digit
+    (e.g. 'type-c') are ignored.
     """
-    return set(_SPEC_TOKEN_RE.findall(text.lower()))
+    tokens: set[str] = set()
+    for raw in text.lower().split():
+        token = raw.strip(_SPEC_STRIP)
+        if token and any(char.isdigit() for char in token):
+            tokens.add(token)
+    return tokens
 
 
 def title_similarity(a: str, b: str) -> float:
