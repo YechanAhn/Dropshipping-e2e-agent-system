@@ -112,6 +112,30 @@ async def test_infeasible_when_competition_below_floor():
     assert res.register_payload is None
 
 
+async def test_catalog_match_strategy_targets_lowest():
+    """With catalog_lowest set, pricing uses lowest_for_exposure (최저가 매칭)."""
+    orch = SourcingOrchestrator(
+        FakeMatcher(_match(MatchStatus.AUTO, _ali("5"))), FakeContent(), fx_rate=Decimal("1500")
+    )
+    res = await orch.evaluate(
+        REF, competitor_prices=[28000, 30000], catalog_lowest=25000, market_floor=24000
+    )
+    assert res.pricing_strategy == "catalog_match"
+    assert res.status == "ready"
+    assert res.pricing is not None and res.pricing.feasible
+    # landed (5+2)*1500*1.1 = 11550 -> floor ~18047 < market_low(24000) - 10 = 23990.
+    assert res.pricing.recommended_price == 23990
+
+
+async def test_standalone_strategy_when_no_catalog():
+    """No catalog_lowest -> standalone (optimal_price) strategy."""
+    orch = SourcingOrchestrator(
+        FakeMatcher(_match(MatchStatus.AUTO, _ali("5"))), FakeContent(), fx_rate=Decimal("1500")
+    )
+    res = await orch.evaluate(REF, competitor_prices=[28000, 30000, 32000])
+    assert res.pricing_strategy == "standalone"
+
+
 async def test_evaluate_candidate_threads_image_url():
     """evaluate_candidate carries the discovery image into NaverProductRef."""
     from dropagent.pipeline.discovery import DiscoveryCandidate

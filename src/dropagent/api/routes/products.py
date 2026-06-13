@@ -6,10 +6,11 @@ All endpoints are wired to :class:`ProductRepository` through the
 """
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from dropagent.api.deps import ProductRepoDep
 from dropagent.db.models import Product
@@ -36,6 +37,16 @@ class ProductOut(BaseModel):
     price_ali: Decimal | None = None  # AliExpress sale price, in KRW (target_currency=KRW)
     price_ali_krw: Decimal | None = None  # alias of price_ali (already KRW); kept for dashboard
     price_naver: Decimal | None = None
+    # 최저가 노출 추적
+    naver_catalog_lowest: Decimal | None = None  # 가격비교 대표(catalog) 최저가 = 배지가
+    naver_price_min_market: Decimal | None = None  # 검색결과 전체 최저가 (단독 포함)
+    is_price_lowest: bool = False  # 현재 최저가(배지) 보유 여부
+    price_floor: Decimal | None = None  # 마진 하한 가격
+    pricing_strategy: str | None = None  # catalog_match | standalone
+    last_repriced_at: datetime | None = None
+    # 파생값 (대시보드용)
+    price_gap: Decimal | None = None  # price_naver - naver_catalog_lowest (양수면 더 비쌈)
+    badge_at_risk: bool = False  # 최저가보다 비싸 배지 미확보 → 노출 위험
     margin_rate: Decimal | None = None
     priority_score: Decimal | None = None
     risk_score: Decimal | None = None
@@ -43,15 +54,25 @@ class ProductOut(BaseModel):
     demand_score: Decimal | None = None
     status: str
 
+    @field_validator("is_price_lowest", "badge_at_risk", mode="before")
+    @classmethod
+    def _none_to_false(cls, v: object) -> bool:
+        """Transient (un-flushed) Product rows have None here; treat as False."""
+        return bool(v)
+
 
 def _serialize(product: Product) -> ProductOut:
     """
     Serialize a product. ``price_ali`` is sourced from AliExpress already in KRW
     (target_currency=KRW), so no FX conversion happens here -- ``price_ali_krw``
-    simply mirrors it for the dashboard.
+    simply mirrors it for the dashboard. ``price_gap``/``badge_at_risk`` are
+    derived from our Naver price vs the catalog 최저가.
     """
     out = ProductOut.model_validate(product)
     out.price_ali_krw = out.price_ali
+    if out.price_naver is not None and out.naver_catalog_lowest is not None:
+        out.price_gap = out.price_naver - out.naver_catalog_lowest
+        out.badge_at_risk = out.price_naver > out.naver_catalog_lowest
     return out
 
 

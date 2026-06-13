@@ -23,6 +23,7 @@ from dropagent.core.pricing import (
     SMARTSTORE_FEE_RATE,
     PricingResult,
     charm_round,
+    lowest_for_exposure,
     optimal_price,
 )
 
@@ -269,3 +270,50 @@ class TestOptimalPriceConfig:
         result = optimal_price(Decimal("3000"), [14000])
         assert result.competitive_p25 == 14000
         assert result.competitive_median == 14000
+
+
+class TestLowestForExposure:
+    """Target the catalog 최저가 for exposure, never below the margin floor."""
+
+    def test_undercuts_lowest_when_above_floor(self):
+        # landed cheap -> floor well below the market; undercut by 10원, round to 10.
+        result = lowest_for_exposure(Decimal("5000"), catalog_lowest=20000, market_floor=19000)
+        assert result.feasible is True
+        # market_low = min(20000, 19000) = 19000; target = 19000 - 10 = 18990.
+        assert result.recommended_price == 18990
+        assert result.recommended_price <= 19000  # stays at/under the floor to win badge
+        assert "언더컷" in result.reason
+
+    def test_match_only_does_not_undercut(self):
+        # Already hold the badge -> match (undercut 0), avoid race to the bottom.
+        result = lowest_for_exposure(
+            Decimal("5000"), catalog_lowest=20000, market_floor=20000, match_only=True
+        )
+        assert result.feasible is True
+        assert result.recommended_price == 20000
+        assert "매칭" in result.reason
+
+    def test_do_not_chase_when_lowest_below_floor(self):
+        # Expensive to source -> the market 최저가 is below our margin floor.
+        result = lowest_for_exposure(Decimal("20000"), catalog_lowest=15000, market_floor=14000)
+        assert result.feasible is False
+        assert result.recommended_price >= result.floor_price  # holds at floor, never below
+        assert "추격 금지" in result.reason
+
+    def test_no_market_data_returns_floor_reference(self):
+        result = lowest_for_exposure(Decimal("5000"), catalog_lowest=0, market_floor=None)
+        assert result.feasible is False
+        assert result.recommended_price >= result.floor_price
+        assert "데이터" in result.reason
+
+    def test_margin_unachievable_is_infeasible(self):
+        result = lowest_for_exposure(
+            Decimal("5000"), catalog_lowest=20000, target_margin=Decimal("0.95")
+        )
+        assert result.feasible is False
+        assert result.recommended_price == 0
+
+    def test_recommended_respects_margin_floor_when_feasible(self):
+        result = lowest_for_exposure(Decimal("8000"), catalog_lowest=12000, market_floor=11500)
+        if result.feasible:
+            assert result.recommended_price >= result.floor_price

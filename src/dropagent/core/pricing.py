@@ -325,3 +325,137 @@ def optimal_price(
         feasible=feasible,
         reason=reason,
     )
+
+
+def lowest_for_exposure(
+    landed_cost: Decimal,
+    catalog_lowest: int,
+    *,
+    market_floor: int | None = None,
+    target_margin: Decimal = DEFAULT_TARGET_MARGIN,
+    fee_rate: Decimal = SMARTSTORE_FEE_RATE,
+    min_profit: int = DEFAULT_MIN_PROFIT,
+    min_undercut: int = 10,
+    round_to: int = 10,
+    match_only: bool = False,
+) -> PricingResult:
+    """가격비교(catalog) 매칭 전략: **최저가를 맞추거나 살짝 언더컷**해 노출을 확보하되,
+    마진 하한 아래로는 절대 내려가지 않는다.
+
+    초기 사업자는 인기도(판매/리뷰) 신호가 거의 없으므로, 네이버 가격비교 카탈로그에서
+    최저가를 매칭/언더컷하는 것이 노출의 가장 빠른 길이다. 단, 적자 추격은 금지한다.
+
+    절차 (docs 리서치 price-engine rules):
+        1. 마진 하한 ``P_floor`` 계산(:func:`_margin_floor_price`). 달성 불가면
+           ``feasible=False``, 권장가 0.
+        2. ``market_low`` = ``catalog_lowest`` 와 ``market_floor`` 중 0 이 아닌 값들의
+           최솟값 (catalog 배지가 + 단독 최저가까지 함께 고려).
+        3. ``target`` = ``market_low - min_undercut`` (``match_only`` 면 언더컷 0 = 매칭).
+           charm 라운딩은 쓰지 않는다(₩x,900 으로 올림하면 최저가 배지를 잃음). 대신
+           ``round_to`` 단위로 **내림**해 항상 ``market_low`` 이하를 유지한다.
+        4. ``target >= P_floor`` 이면 권장가 = ``target`` (마진 하한 보장), ``feasible=True``.
+        5. ``target < P_floor`` (최저가가 마진 하한 미만) 이면 **추격 금지**:
+           권장가 = ``charm_round(P_floor)`` (참고용), ``feasible=False``.
+
+    Args:
+        landed_cost: 알리 랜딩 원가 (원).
+        catalog_lowest: 가격비교 대표(catalog) 최저가 = 배지 가격 (원, 0 이면 미상).
+        market_floor: 검색결과 전체 최저가(단독 포함). ``None``/0 이면 무시.
+        target_margin: 목표 마진율. 기본 0.30.
+        fee_rate: 스마트스토어 수수료율. 기본 :data:`SMARTSTORE_FEE_RATE`.
+        min_profit: 건당 최소 절대 순이익 (원). 기본 :data:`DEFAULT_MIN_PROFIT`.
+        min_undercut: 최저가 언더컷 단위 (원). 배지 확보용 최소 의미 단위(예 10원).
+        round_to: 권장가 내림 단위 (원). 기본 10.
+        match_only: 이미 배지를 보유 중이면 매칭만(언더컷 0) → 바닥치기 경쟁 회피.
+
+    Returns:
+        PricingResult: 권장가/하한가/시장가/예상마진/실현가능성/사유.
+    """
+    landed = Decimal(landed_cost)
+
+    # --- 1) 마진 하한 ---
+    floor_dec = _margin_floor_price(landed, fee_rate, target_margin, min_profit)
+    if floor_dec is None:
+        return PricingResult(
+            recommended_price=0,
+            floor_price=0,
+            competitive_p25=None,
+            competitive_median=catalog_lowest or None,
+            expected_margin_rate=0.0,
+            expected_profit=0,
+            feasible=False,
+            reason=f"목표 마진 {target_margin} 은 수수료율 {fee_rate} 구조상 달성 불가.",
+        )
+    floor_price = int(floor_dec.quantize(Decimal("1"), rounding=ROUND_CEILING))
+
+    # --- 2) 시장 최저가 (0 이 아닌 값들의 최솟값) ---
+    market_values = [v for v in (catalog_lowest, market_floor or 0) if v and v > 0]
+    market_low = min(market_values) if market_values else 0
+
+    # --- 시장 데이터가 없으면: 가격대 미상 → 하한 참고가만 제시 ---
+    if market_low <= 0:
+        recommended = charm_round(floor_price, round_to=100, charm=True)
+        profit_dec = _net_profit(Decimal(recommended), landed, fee_rate)
+        return PricingResult(
+            recommended_price=recommended,
+            floor_price=floor_price,
+            competitive_p25=None,
+            competitive_median=None,
+            expected_margin_rate=float(
+                (profit_dec / Decimal(recommended)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+            ),
+            expected_profit=int(profit_dec.quantize(Decimal("1"), rounding=ROUND_HALF_UP)),
+            feasible=False,
+            reason="최저가 데이터가 없어 가격대 미상. 마진 하한 가격을 참고용으로 제시.",
+        )
+
+    # --- 3) 목표가 (매칭 또는 언더컷), round_to 단위 내림으로 market_low 이하 유지 ---
+    undercut_unit = 0 if match_only else min_undercut
+    target = market_low - undercut_unit
+    if round_to > 1:
+        target = (target // round_to) * round_to
+
+    # --- 4)/5) 마진 하한과 비교 ---
+    if target >= floor_price:
+        recommended = target
+        feasible = True
+        verb = "매칭" if match_only else f"{min_undercut}원 언더컷"
+        reason = f"최저가({market_low:,}) {verb}(badge 확보), 마진 하한({floor_price:,}) 이상."
+    else:
+        # 최저가가 마진 하한 미만 → 추격 금지(적자 방지). 하한을 참고가로.
+        recommended = charm_round(floor_price, round_to=100, charm=True)
+        feasible = False
+        reason = (
+            f"시장 최저가({market_low:,})가 마진 하한({floor_price:,}) 미만 → 추격 금지. "
+            f"적합도/리뷰/광고 또는 단독 전환으로 대응."
+        )
+
+    rec_dec = Decimal(recommended)
+    profit_dec = _net_profit(rec_dec, landed, fee_rate)
+    expected_profit = int(profit_dec.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    expected_margin_rate = float(
+        (profit_dec / rec_dec).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    )
+
+    logger.debug(
+        "lowest_for_exposure_computed",
+        landed_cost=str(landed),
+        catalog_lowest=catalog_lowest,
+        market_floor=market_floor,
+        market_low=market_low,
+        recommended=recommended,
+        floor_price=floor_price,
+        feasible=feasible,
+        match_only=match_only,
+    )
+
+    return PricingResult(
+        recommended_price=recommended,
+        floor_price=floor_price,
+        competitive_p25=market_low,
+        competitive_median=catalog_lowest or None,
+        expected_margin_rate=expected_margin_rate,
+        expected_profit=expected_profit,
+        feasible=feasible,
+        reason=reason,
+    )

@@ -28,12 +28,13 @@ from dropagent.core.idempotency import IdempotencyManager
 from dropagent.core.image_processor import make_image_scorer
 from dropagent.core.matching import ProductMatcher
 from dropagent.core.matching.vision_verifier import make_vision_verifier
+from dropagent.core.pricing import lowest_for_exposure
 from dropagent.db.repositories.analytics_repo import AnalyticsRepository
 from dropagent.db.repositories.order_repo import OrderRepository
 from dropagent.db.repositories.product_repo import ProductRepository
 from dropagent.db.session import get_db_session
 from dropagent.pipeline.discovery import DiscoveryPipeline
-from dropagent.pipeline.sourcing import SourcingOrchestrator
+from dropagent.pipeline.sourcing import SourcingOrchestrator, estimate_landed_cost
 from dropagent.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -69,6 +70,70 @@ async def _live_usd_krw() -> Decimal:
         return await client.get_rate("USD", "KRW")
     finally:
         await client.close()
+
+
+async def _track_lowest_price(product, ali_detail, shopping_client) -> str | None:  # noqa: ANN001
+    """등록 상품의 최저가 노출 상태를 갱신한다 (DB 영속화 + 적자추격 알림 문자열 반환).
+
+    네이버 가격비교 최저가(배지가)와 시장 최저가를 라이브 조회하고, 마진 하한을
+    지키는 노출 권장가(:func:`lowest_for_exposure`)를 계산해 상품에 기록한다. 실제
+    네이버 가격 변경(Commerce push)은 HITL/auto_reprice 게이트로 분리한다 — 여기서는
+    분석/영속화만 수행한다(마진 하한 미만으로는 절대 내리지 않는 원칙).
+
+    Returns:
+        최저가가 마진 하한 미만이라 추격하면 적자인 경우 사람이 볼 알림 문자열, 아니면 None.
+    """
+    keyword = product.product_name_ko or product.product_name_en
+    if not keyword:
+        return None
+
+    catalog = await shopping_client.get_catalog_lowest(keyword)
+    if catalog.lowest_price <= 0 and not catalog.catalog_parent_price:
+        return None  # 가격 데이터 없음
+
+    # 알리 가격은 이미 KRW (target_currency=KRW) → 환율 변환 불필요.
+    landed = estimate_landed_cost(ali_detail)
+
+    market_vals = [v for v in (catalog.catalog_parent_price or 0, catalog.lowest_price) if v > 0]
+    market_low = min(market_vals) if market_vals else 0
+    price_naver = int(product.price_naver) if product.price_naver is not None else 0
+    is_lowest_now = bool(price_naver and market_low and price_naver <= market_low)
+
+    pricing = lowest_for_exposure(
+        landed,
+        catalog.catalog_parent_price or 0,
+        market_floor=catalog.lowest_price or None,
+        match_only=is_lowest_now,
+    )
+
+    product.naver_catalog_lowest = (
+        Decimal(catalog.catalog_parent_price) if catalog.catalog_parent_price else None
+    )
+    product.naver_price_min_market = Decimal(catalog.lowest_price) if catalog.lowest_price else None
+    product.price_floor = Decimal(pricing.floor_price) if pricing.floor_price else None
+    product.is_price_lowest = is_lowest_now
+    product.last_repriced_at = datetime.now(UTC)
+    if not product.pricing_strategy:
+        product.pricing_strategy = "catalog_match" if catalog.has_catalog else "standalone"
+
+    logger.info(
+        "lowest_price_tracked",
+        ali_product_id=product.ali_product_id,
+        keyword=keyword,
+        market_low=market_low,
+        catalog_lowest=catalog.catalog_parent_price,
+        our_price=price_naver,
+        recommended=pricing.recommended_price,
+        floor=pricing.floor_price,
+        feasible=pricing.feasible,
+        is_lowest=is_lowest_now,
+    )
+
+    if not pricing.feasible and market_low > 0:
+        return (
+            f"• {keyword[:30]} — 최저가 {market_low:,}원 < 마진하한 {pricing.floor_price:,}원"
+        )
+    return None
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -602,6 +667,8 @@ async def monitor_price_changes_job() -> None:
         changed_count = 0
 
         ali_client = AliExpressAffiliateClient(settings.aliexpress)
+        shopping_client = NaverShoppingClient(settings.naver)
+        reprice_alerts: list[str] = []
         try:
             async with get_db_session() as session:
                 product_repo = ProductRepository(session)
@@ -651,8 +718,34 @@ async def monitor_price_changes_job() -> None:
                                 ali_product_id=product.ali_product_id,
                                 error=str(record_exc),
                             )
+
+                        # --- 최저가 노출 추적/재가격책정 분석 (초기 사업자 노출 핵심) ---
+                        try:
+                            alert = await _track_lowest_price(
+                                product, detail, shopping_client
+                            )
+                            if alert:
+                                reprice_alerts.append(alert)
+                        except Exception as reprice_exc:
+                            logger.warning(
+                                "reprice_track_failed",
+                                ali_product_id=product.ali_product_id,
+                                error=str(reprice_exc),
+                            )
         finally:
             await ali_client.close()
+            await shopping_client.close()
+
+        # 적자 추격 위험 등 사람이 봐야 할 케이스만 텔레그램 알림 (best-effort).
+        if reprice_alerts:
+            try:
+                notifier = TelegramNotifier(settings.telegram)
+                await notifier.send_message(
+                    "⚠️ 최저가 추격 시 적자 위험 (단독 전환/광고 검토):\n"
+                    + "\n".join(reprice_alerts[:10])
+                )
+            except Exception as notify_exc:
+                logger.warning("reprice_alert_notify_failed", error=str(notify_exc))
 
         result = {"checked_count": checked_count, "changed_count": changed_count}
         await _complete_job(idempotency_key, result)

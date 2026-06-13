@@ -21,6 +21,10 @@ import statistics
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
+from dropagent.clients.naver.models import (
+    CATALOG_PARENT_PRODUCT_TYPES,
+    STANDALONE_PRODUCT_TYPES,
+)
 from dropagent.clients.naver.searchad_api import NaverSearchAdClient
 from dropagent.clients.naver.shopping_api import NaverShoppingClient
 from dropagent.core.discovery.competition import (
@@ -50,14 +54,11 @@ logger = get_logger(__name__)
 # Search Ad accepts at most 5 hint keywords per call.
 SEED_BATCH_SIZE = 5
 
-# Naver Shopping productType codes for "가격비교 비매칭 일반상품" (standalone, not
-# matched into a price-comparison catalog) -- the dropshipping-friendly kind.
-# Everything else (대표/매칭) means catalog price-war exposure. The "단독" column
-# spans all 4 상품군 (일반/중고/단종/예정), hence {2, 5, 8, 11}.
-# Verified live (Shopping Search API): head term "무선이어폰" skews type 1
-# (가격비교 대표), long-tail "골전도 이어폰" skews type 2 (비매칭 단독) -- exactly
-# the catalog-vs-standalone split this filter assumes.
-STANDALONE_PRODUCT_TYPES = frozenset({2, 5, 8, 11})
+# productType classification lives in clients.naver.models (single source of
+# truth) and is re-exported here for the pipeline:
+#   STANDALONE_PRODUCT_TYPES {2,5,8,11}      = 비매칭 단독 (dropshipping-friendly)
+#   CATALOG_PARENT_PRODUCT_TYPES {1,4,7,10}  = 가격비교 대표 (its lprice = 최저가 badge)
+__all__ = ["STANDALONE_PRODUCT_TYPES", "CATALOG_PARENT_PRODUCT_TYPES", "DiscoveryCandidate"]
 
 # Defaults
 DEFAULT_MIN_MONTHLY_VOLUME = 1_000
@@ -91,6 +92,11 @@ class DiscoveryCandidate:
     grade: CompetitionGrade = CompetitionGrade.SATURATED
     catalog_ratio: float = 0.0
     price_median: int = 0
+    # 최저가 노출 추적용 (초기 사업자는 최저가를 맞춰야 노출 가능):
+    #   price_min       = 검색결과 전체 lprice 최솟값 (단독 포함 시장 바닥가)
+    #   catalog_lowest  = 가격비교 대표(catalog) 상품의 lprice 최솟값 (최저가 badge 가격)
+    price_min: int = 0
+    catalog_lowest: int = 0
     image_url: str = ""
     comp_idx: str = ""
     volume_masked: bool = False
@@ -209,6 +215,14 @@ class DiscoveryPipeline:
             candidate.catalog_ratio = round(1.0 - standalone / len(result.items), 4)
             prices = [it.lowest_price for it in result.items if it.lowest_price > 0]
             candidate.price_median = int(statistics.median(prices)) if prices else 0
+            # 최저가 (zero extra API calls -- reuse the items already fetched).
+            candidate.price_min = min(prices) if prices else 0
+            catalog_prices = [
+                it.lowest_price
+                for it in result.items
+                if it.product_type in CATALOG_PARENT_PRODUCT_TYPES and it.lowest_price > 0
+            ]
+            candidate.catalog_lowest = min(catalog_prices) if catalog_prices else 0
             # Representative photo for downstream image matching: prefer a
             # 비매칭 단독 (standalone) item, else any item with an image.
             standalone_images = [
@@ -301,6 +315,8 @@ class DiscoveryPipeline:
                 "grade": cand.grade_ko,
                 "catalog_ratio": cand.catalog_ratio,
                 "price_median": cand.price_median,
+                "price_min": cand.price_min,
+                "catalog_lowest": cand.catalog_lowest,
                 "momentum": cand.momentum.label.value if cand.momentum else None,
             }
 

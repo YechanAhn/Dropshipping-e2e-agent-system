@@ -10,6 +10,7 @@ Reference:
 """
 
 import asyncio
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -24,6 +25,31 @@ from .models import NaverShoppingItem, NaverShoppingResult
 logger = get_logger(__name__)
 
 SHOPPING_SEARCH_URL = "https://openapi.naver.com/v1/search/shop.json"
+
+
+@dataclass
+class CatalogLowest:
+    """A keyword's live lowest-price snapshot from the Naver Shopping API.
+
+    Attributes:
+        lowest_price: Cheapest lprice across all results (incl. 단독 sellers) -- the
+            true market floor a listing competes against.
+        catalog_parent_price: Cheapest lprice among 가격비교 대표(catalog parent)
+            items = the 최저가 badge price. ``None`` when no catalog is present.
+        has_catalog: Whether any 가격비교 대표 item appeared.
+        mall_name: Mall name of the lowest-priced item (who currently holds it).
+        product_type: productType of the lowest-priced item.
+        sample: The (sorted asc) lprice sample used, for transparency/debugging.
+        total: Total result count reported by the API.
+    """
+
+    lowest_price: int = 0
+    catalog_parent_price: int | None = None
+    has_catalog: bool = False
+    mall_name: str = ""
+    product_type: int = 0
+    sample: list[int] = field(default_factory=list)
+    total: int = 0
 
 # Maximum items per request imposed by the Naver Search API
 MAX_DISPLAY = 100
@@ -177,6 +203,43 @@ class NaverShoppingClient:
         prices = [item.lowest_price for item in result.items if item.lowest_price > 0]
         prices.sort()
         return prices
+
+    async def get_catalog_lowest(self, query: str, *, display: int = 40) -> CatalogLowest:
+        """Fetch the live lowest price for *query* in a single ``sort=asc`` call.
+
+        Used by the repricer where freshness matters. The first item (cheapest)
+        gives the market floor; the cheapest 가격비교 대표 item gives the catalog
+        최저가 badge price a new seller must match for exposure.
+
+        Args:
+            query: Product/keyword to look up.
+            display: Number of results to scan (max 100). 40 is plenty to find
+                both the overall floor and the catalog parent.
+
+        Returns:
+            ``CatalogLowest`` snapshot (all-zero/empty when there are no results).
+        """
+        logger.info("naver_catalog_lowest", query=query, display=display)
+
+        result = await self.search(query=query, display=min(display, MAX_DISPLAY), sort="asc")
+        priced = [it for it in result.items if it.lowest_price > 0]
+        if not priced:
+            return CatalogLowest(total=result.total)
+
+        # sort=asc already orders by price, but re-sort defensively.
+        priced.sort(key=lambda it: it.lowest_price)
+        cheapest = priced[0]
+        catalog_prices = [it.lowest_price for it in priced if it.is_catalog]
+
+        return CatalogLowest(
+            lowest_price=cheapest.lowest_price,
+            catalog_parent_price=min(catalog_prices) if catalog_prices else None,
+            has_catalog=bool(catalog_prices),
+            mall_name=cheapest.mall_name,
+            product_type=cheapest.product_type,
+            sample=[it.lowest_price for it in priced[:10]],
+            total=result.total,
+        )
 
     async def search_with_pagination(
         self,

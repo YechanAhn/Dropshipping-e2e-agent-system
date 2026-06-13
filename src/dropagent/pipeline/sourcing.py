@@ -23,6 +23,7 @@ from dropagent.core.matching import MatchResult, MatchStatus, NaverProductRef, P
 from dropagent.core.pricing import (
     DEFAULT_TARGET_MARGIN,
     PricingResult,
+    lowest_for_exposure,
     optimal_price,
 )
 from dropagent.pipeline.discovery import DiscoveryCandidate
@@ -43,6 +44,7 @@ class SourcingResult:
     match: MatchResult | None = None
     landed_cost: Decimal | None = None
     pricing: PricingResult | None = None
+    pricing_strategy: str | None = None  # catalog_match | standalone
     content: GeneratedContent | None = None
     register_payload: dict | None = None
     notes: list[str] = field(default_factory=list)
@@ -141,8 +143,19 @@ class SourcingOrchestrator:
         self,
         naver_ref: NaverProductRef,
         competitor_prices: list[int],
+        *,
+        catalog_lowest: int = 0,
+        market_floor: int | None = None,
     ) -> SourcingResult:
-        """Run match -> price -> content for a single opportunity."""
+        """Run match -> price -> content for a single opportunity.
+
+        Pricing strategy is chosen from the competitive shape:
+          - ``catalog_lowest > 0`` (가격비교 카탈로그가 지배적) -> ``catalog_match``:
+            target the catalog 최저가 for exposure via :func:`lowest_for_exposure`
+            (a new seller must match 최저가 to be shown), never below the margin floor.
+          - otherwise -> ``standalone``: keep our own SEO 상품명 and undercut p25 via
+            :func:`optimal_price`.
+        """
         result = SourcingResult(naver_ref=naver_ref, status="rejected")
 
         match = await self._matcher.match(naver_ref)
@@ -157,7 +170,17 @@ class SourcingOrchestrator:
         landed = estimate_landed_cost(ali, fx_rate=fx, import_buffer=self._import_buffer)
         result.landed_cost = landed
 
-        pricing = optimal_price(landed, competitor_prices, target_margin=self._target_margin)
+        if catalog_lowest and catalog_lowest > 0:
+            result.pricing_strategy = "catalog_match"
+            pricing = lowest_for_exposure(
+                landed,
+                catalog_lowest,
+                market_floor=market_floor,
+                target_margin=self._target_margin,
+            )
+        else:
+            result.pricing_strategy = "standalone"
+            pricing = optimal_price(landed, competitor_prices, target_margin=self._target_margin)
         result.pricing = pricing
         if not pricing.feasible:
             result.status = "infeasible"
@@ -190,4 +213,10 @@ class SourcingOrchestrator:
         prices = competitor_prices if competitor_prices is not None else (
             [candidate.price_median] if candidate.price_median else []
         )
-        return await self.evaluate(naver_ref, prices)
+        # 카탈로그가 있으면 최저가 매칭(노출) 전략, 없으면 단독 언더컷.
+        return await self.evaluate(
+            naver_ref,
+            prices,
+            catalog_lowest=candidate.catalog_lowest,
+            market_floor=candidate.price_min or None,
+        )

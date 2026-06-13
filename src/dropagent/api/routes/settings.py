@@ -30,6 +30,9 @@ class AutomationFlags(BaseModel):
     auto_approve: bool = False
     auto_register: bool = False
     auto_order: bool = False
+    # 자동 재가격책정: 최저가 변동 시 네이버 가격을 자동 갱신. 마진 하한 미만으로는
+    # 절대 내리지 않으며, off 면 분석만 기록하고 실제 가격 변경은 HITL 로 보류.
+    auto_reprice: bool = False
 
 
 class Settings(BaseModel):

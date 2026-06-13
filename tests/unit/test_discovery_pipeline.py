@@ -203,6 +203,24 @@ async def test_measure_competition_captures_representative_image():
     assert cand.image_url == "https://x/standalone.jpg"  # standalone preferred over catalog
 
 
+async def test_measure_competition_captures_lowest_prices():
+    """measure_competition fills price_min (overall floor) and catalog_lowest (badge)."""
+    items = [
+        NaverShoppingItem(lowest_price=22000, product_type=1),  # catalog parent
+        NaverShoppingItem(lowest_price=18000, product_type=1),  # catalog parent (cheaper)
+        NaverShoppingItem(lowest_price=15000, product_type=2),  # 단독, cheapest overall
+    ]
+    table = {"골전도 이어폰": NaverShoppingResult(items=items, total=5_000)}
+    pipe = DiscoveryPipeline(FakeSearchAd([]), FakeShopping(table))
+    cand = DiscoveryCandidate(keyword="골전도 이어폰", monthly_volume=10_000)
+
+    await pipe.measure_competition(cand)
+
+    assert cand.price_min == 15000  # overall lowest incl. 단독
+    assert cand.catalog_lowest == 18000  # cheapest 가격비교 대표 = badge price
+    assert cand.price_median == 18000  # median of [15000, 18000, 22000]
+
+
 async def test_rising_momentum_applies_opportunity_bonus():
     """A RISING candidate's opportunity gets the label bonus on top of the score."""
     from dropagent.core.discovery.competition import DEFAULT_WEIGHTS, opportunity_score
