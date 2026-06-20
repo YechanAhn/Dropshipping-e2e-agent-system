@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from dropagent.agents.order_manager import OrderManager
-from dropagent.clients.aliexpress.affiliate_api import AliExpressAffiliateClient
+from dropagent.clients.aliexpress import get_ali_client
 from dropagent.clients.naver.commerce_api import NaverCommerceClient
 from dropagent.clients.naver.datalab_api import NaverDataLabClient
 from dropagent.clients.naver.searchad_api import NaverSearchAdClient
@@ -213,9 +213,10 @@ async def collect_ali_products_job() -> None:
     """
     알리익스프레스 핫상품 수집 (6시간마다 실행).
 
-    실제 ``AliExpressAffiliateClient.get_hot_products`` 를 사용하여 몇 개의 트렌드
-    카테고리에서 인기 상품을 조회하고 수집 건수를 로깅합니다. 멱등성 키로 중복
-    수집을 방지합니다.
+    ``get_ali_client()`` (DS 또는 affiliate) 의 ``get_hot_products`` 로 몇 개의
+    트렌드 카테고리에서 인기 상품을 조회하고 수집 건수를 로깅합니다. (DS 클라이언트는
+    핫상품 엔드포인트가 없어 빈 결과를 반환하므로, 수요 우선 디스커버리(네이버)가
+    주 소싱 경로입니다.) 멱등성 키로 중복 수집을 방지합니다.
     """
     job_type = "collect_ali_products"
     idempotency_key = IdempotencyManager.generate_key(job_type, "batch")
@@ -231,7 +232,7 @@ async def collect_ali_products_job() -> None:
         settings = get_settings()
         collected_count = 0
 
-        ali_client = AliExpressAffiliateClient(settings.aliexpress)
+        ali_client = get_ali_client(settings.aliexpress)
         try:
             for category_id in ALI_HOT_CATEGORY_IDS:
                 try:
@@ -464,7 +465,7 @@ async def auto_register_products_job() -> None:
         skipped_count = 0
         failed_count = 0
 
-        ali_client = AliExpressAffiliateClient(settings.aliexpress)
+        ali_client = get_ali_client(settings.aliexpress)
         commerce_client = NaverCommerceClient(settings.naver)
         try:
             # Image scorer (dHash) cheaply re-ranks candidates by photo; the
@@ -647,9 +648,9 @@ async def monitor_price_changes_job() -> None:
     """
     알리익스프레스 가격 변동 모니터링 (3시간마다 실행).
 
-    등록된 상품을 표본으로 잡아 ``AliExpressAffiliateClient.get_product_detail`` 로
-    현재 가격을 조회하고, 변동을 ``AnalyticsRepository.add_price_record`` 로
-    기록합니다.
+    등록된 상품을 표본으로 잡아 ``get_ali_client().get_product_detail`` 로
+    현재 가격(KRW)을 조회하고, 변동을 ``AnalyticsRepository.add_price_record`` 로
+    기록합니다. 동시에 네이버 최저가 노출 상태를 갱신합니다(_track_lowest_price).
     """
     job_type = "monitor_price_changes"
     idempotency_key = IdempotencyManager.generate_key(job_type, "batch")
@@ -666,7 +667,7 @@ async def monitor_price_changes_job() -> None:
         checked_count = 0
         changed_count = 0
 
-        ali_client = AliExpressAffiliateClient(settings.aliexpress)
+        ali_client = get_ali_client(settings.aliexpress)
         shopping_client = NaverShoppingClient(settings.naver)
         reprice_alerts: list[str] = []
         try:

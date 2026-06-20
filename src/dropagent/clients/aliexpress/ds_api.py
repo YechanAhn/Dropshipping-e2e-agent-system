@@ -339,6 +339,17 @@ class AliExpressDSClient:
             current_page=_to_int(result.get("pageIndex"), page),
         )
 
+    async def get_hot_products(self, category_id: str, page: int = 1) -> AliSearchResult:
+        """Interface parity with the affiliate client.
+
+        The DS API has no affiliate-style "hot products by category" endpoint and
+        this system is demand-first (it sources from Naver discovery, not from an
+        AliExpress hot-list), so this returns an empty result instead of crashing
+        the caller. Logged so the no-op is visible (not silent).
+        """
+        logger.info("aliexpress_ds_hot_products_unsupported", category_id=category_id)
+        return AliSearchResult(products=[], total_count=0, current_page=page)
+
     async def get_product_detail(self, product_ids: list[str]) -> list[AliProductDetail]:
         """Fetch detail (KRW price, images, video, options) via ``aliexpress.ds.product.get``."""
         if not product_ids:

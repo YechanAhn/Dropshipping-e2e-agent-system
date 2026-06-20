@@ -150,7 +150,7 @@ def test_jobs_source_references_real_components() -> None:
         "DiscoveryPipeline",
         "SourcingOrchestrator",
         "OrderManager",
-        "AliExpressAffiliateClient",
+        "get_ali_client",
         "NaverCommerceClient",
         "get_hot_products",
         "get_product_detail",
