@@ -70,8 +70,10 @@ async def _seed_keyword(repo, shopping, ali, keyword: str, display: int) -> str:
         return "no-naver"
 
     # AliExpress source: top product for the keyword (DS, KRW prices).
+    # Skip zero/placeholder-priced items -- a 0 price would yield landed cost 0
+    # and defeat the margin floor.
     search = await ali.search_products(keyword, page_size=10)
-    top = search.products[0] if search.products else None
+    top = next((p for p in search.products if p.price.sale_price > 0), None)
     if top is None:
         return "no-ali"
 

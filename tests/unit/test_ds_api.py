@@ -247,3 +247,111 @@ def test_get_ali_client_prefers_ds_when_token_present():
     assert isinstance(ds, AliExpressDSClient)
     aff = get_ali_client(_settings(access_token=""))
     assert isinstance(aff, AliExpressAffiliateClient)
+
+
+# ─── robustness fixes (from code review) ─────────────────────────────────
+
+
+class _StaticHttp:
+    """Returns fixed payloads for post()/get()."""
+
+    def __init__(self, post_payload=None, get_payload=None) -> None:  # noqa: ANN001
+        self.is_closed = False
+        self._post = post_payload
+        self._get = get_payload
+
+    async def post(self, url, data=None, headers=None):  # noqa: ANN001
+        return _FakeResp(self._post)
+
+    async def get(self, url, params=None):  # noqa: ANN001
+        return _FakeResp(self._get)
+
+    async def aclose(self) -> None:
+        self.is_closed = True
+
+
+def _detail_payload(sku: dict, base: dict | None = None, logistics: dict | None = None) -> dict:
+    return {
+        "aliexpress_ds_product_get_response": {
+            "rsp_code": 200,
+            "result": {
+                "ae_item_base_info_dto": base or {"subject": "X", "target_sale_price": "9999"},
+                "ae_item_sku_info_dtos": {"ae_item_sku_info_d_t_o": [sku]},
+                "logistics_info_dto": logistics or {"delivery_time": 7},
+            },
+        }
+    }
+
+
+async def test_detail_zero_priced_sku_falls_back_to_base_not_zero():
+    # offer_sale_price="0" is truthy as a string -> must NOT yield sale_price 0.
+    payload = _detail_payload({"sku_id": "1", "offer_sale_price": "0", "sku_price": "0", "currency_code": "KRW"})
+    c = AliExpressDSClient(settings=_settings(), http_client=_StaticHttp(post_payload=payload))
+    d = (await c.get_product_detail(["1"]))[0]
+    assert d.price.sale_price == Decimal("9999")  # base fallback, not 0
+
+
+async def test_detail_comma_stock_does_not_crash():
+    payload = _detail_payload(
+        {"sku_id": "1", "offer_sale_price": "5040", "currency_code": "KRW", "sku_available_stock": "1,200"}
+    )
+    c = AliExpressDSClient(settings=_settings(), http_client=_StaticHttp(post_payload=payload))
+    d = (await c.get_product_detail(["1"]))[0]
+    assert d.price.sale_price == Decimal("5040")
+    assert d.options[0].stock == 1200
+
+
+async def test_detail_range_delivery_time_takes_first_int():
+    payload = _detail_payload(
+        {"sku_id": "1", "offer_sale_price": "5040", "currency_code": "KRW"},
+        logistics={"delivery_time": "7-15"},
+    )
+    c = AliExpressDSClient(settings=_settings(), http_client=_StaticHttp(post_payload=payload))
+    d = (await c.get_product_detail(["1"]))[0]
+    assert d.shipping_info.days == 7  # NOT 715
+
+
+async def test_detail_skips_on_no_result():
+    payload = {"aliexpress_ds_product_get_response": {"rsp_code": 605, "rsp_msg": "ITEM_ID_NOT_FOUND"}}
+    c = AliExpressDSClient(settings=_settings(), http_client=_StaticHttp(post_payload=payload))
+    assert await c.get_product_detail(["bad"]) == []
+
+
+async def test_refresh_raises_on_error_envelope():
+    import pytest
+
+    from dropagent.utils.exceptions import APIError
+
+    http = _StaticHttp(get_payload={"code": "InvalidTokenError", "message": "refresh token expired"})
+    c = AliExpressDSClient(settings=_settings(), http_client=http)
+    with pytest.raises(APIError) as ei:
+        await c.refresh_access_token()
+    assert "InvalidTokenError" in str(ei.value)
+    # the access_token must NOT be overwritten on failure
+    assert c._access_token == "tok-123"
+
+
+async def test_search_handles_single_dict_and_empty():
+    single = {
+        "aliexpress_ds_text_search_response": {
+            "data": {
+                "totalCount": 1,
+                "products": {
+                    "selection_search_product": {
+                        "itemId": "9",
+                        "title": "T",
+                        "targetSalePrice": "1000",
+                        "targetOriginalPriceCurrency": "KRW",
+                    }
+                },
+            }
+        }
+    }
+    c = AliExpressDSClient(settings=_settings(), http_client=_StaticHttp(post_payload=single))
+    r = await c.search_products("x")
+    assert len(r.products) == 1 and r.products[0].product_id == "9"
+
+    empty = {"aliexpress_ds_text_search_response": {"data": {"totalCount": 0, "products": {}}}}
+    c2 = AliExpressDSClient(settings=_settings(), http_client=_StaticHttp(post_payload=empty))
+    r2 = await c2.search_products("x")
+    assert r2.products == [] and r2.total_count == 0

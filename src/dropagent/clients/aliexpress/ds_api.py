@@ -21,6 +21,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import re
 import time
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -62,11 +63,23 @@ def _to_decimal(value: Any, default: str = "0") -> Decimal:
 
 
 def _to_int(value: Any, default: int = 0) -> int:
-    """Parse an int from messy strings like '5,000+' -> 5000."""
+    """Parse a count from messy strings like '5,000+' -> 5000 (strips separators)."""
     if value is None:
         return default
     digits = "".join(ch for ch in str(value) if ch.isdigit())
     return int(digits) if digits else default
+
+
+def _first_int(value: Any, default: int = 0) -> int:
+    """First integer token of a value -- for ranges like '7-15' -> 7 (delivery time).
+
+    Unlike :func:`_to_int` it does NOT concatenate all digits ('7-15' would
+    wrongly become 715), so use this for range-formatted fields.
+    """
+    if value is None:
+        return default
+    match = re.search(r"\d+", str(value))
+    return int(match.group()) if match else default
 
 
 class AliExpressDSClient:
@@ -171,13 +184,26 @@ class AliExpressDSClient:
                 data = response.json()
                 if "error_response" in data:
                     err = data["error_response"]
+                    code = str(err.get("code", ""))
+                    msg = str(err.get("msg", ""))
+                    # Make an expired/invalid access_token visibly attributable
+                    # (else a swallowed per-product failure looks like "no data").
+                    # The refresh_token rotation is handled out-of-band by
+                    # scripts/refresh_ali_token.py (cron); flag it loudly here.
+                    if "token" in (code + msg).lower():
+                        logger.warning(
+                            "aliexpress_ds_token_error",
+                            code=code,
+                            msg=msg,
+                            hint="run scripts/refresh_ali_token.py to rotate the token",
+                        )
                     raise APIError(
-                        message=f"AliExpress DS API error [{err.get('code')}]: {err.get('msg')}",
+                        message=f"AliExpress DS API error [{code}]: {msg}",
                         api_name="aliexpress_ds",
                         response_body=str(err),
                     )
                 return data
-            except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout) as exc:
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_error = exc
                 if attempt < MAX_RETRIES - 1:
                     await asyncio.sleep(INITIAL_BACKOFF * (BACKOFF_MULTIPLIER ** attempt))
@@ -232,10 +258,16 @@ class AliExpressDSClient:
                 response_body=response.text,
             )
         data = response.json()
+        # The IOP /rest gateway returns HTTP 200 with an error envelope on
+        # failure (e.g. expired/invalid refresh_token): {code, message, type}.
+        # Surface the gateway's code+message; keep the raw body out of the
+        # user-facing message (it may carry diagnostic fields).
         token = data.get("access_token")
         if not token:
+            code = str(data.get("code", "")) or "unknown"
+            message = str(data.get("message") or data.get("msg") or "no access_token returned")
             raise APIError(
-                message=f"AliExpress DS token refresh returned no access_token: {data}",
+                message=f"AliExpress DS token refresh failed [{code}]: {message}",
                 api_name="aliexpress_ds",
                 response_body=str(data),
             )
@@ -280,12 +312,15 @@ class AliExpressDSClient:
             modules = json.loads(mobile).get("moduleList", [])
         except (ValueError, TypeError):
             return ""
-        texts = [
-            m.get("data", {}).get("content", "")
-            for m in modules
-            if m.get("type") == "text"
-        ]
-        return "\n".join(t for t in texts if t)
+        # Many AliExpress detail pages put copy in text OR html modules (some are
+        # image-only). Pull text from both so the 상세페이지 generator gets source
+        # copy for more products.
+        texts = []
+        for m in modules:
+            content = (m.get("data", {}) or {}).get("content", "")
+            if m.get("type") in ("text", "html") and content:
+                texts.append(str(content))
+        return "\n".join(texts)
 
     def _parse_detail(self, product_id: str, result: dict[str, Any]) -> AliProductDetail:
         base = result.get("ae_item_base_info_dto", {}) or {}
@@ -296,10 +331,14 @@ class AliExpressDSClient:
         if isinstance(skus, dict):
             skus = [skus]
 
-        # Price: cheapest SKU offer price (already KRW via target_currency).
-        sku_prices = [_to_decimal(s.get("offer_sale_price")) for s in skus if s.get("offer_sale_price")]
+        # Price: cheapest *positive* SKU offer price (already KRW via
+        # target_currency). Filter on the PARSED value: a SKU can carry
+        # offer_sale_price="0" (out-of-stock/placeholder), which is truthy as a
+        # string -- keeping it would make min() return 0 and defeat the margin
+        # floor downstream.
+        sku_prices = [d for s in skus if (d := _to_decimal(s.get("offer_sale_price"))) > 0]
         sale_price = min(sku_prices) if sku_prices else _to_decimal(base.get("target_sale_price"))
-        orig_prices = [_to_decimal(s.get("sku_price")) for s in skus if s.get("sku_price")]
+        orig_prices = [d for s in skus if (d := _to_decimal(s.get("sku_price"))) > 0]
         original_price = min(orig_prices) if orig_prices else sale_price
         currency = next(
             (s.get("currency_code") for s in skus if s.get("currency_code")),
@@ -322,7 +361,8 @@ class AliExpressDSClient:
                     value=value,
                     image_url=next((p.get("sku_image") for p in props if p.get("sku_image")), None),
                     price=_to_decimal(s.get("offer_sale_price")) if s.get("offer_sale_price") else None,
-                    stock=int(s["sku_available_stock"]) if s.get("sku_available_stock") is not None else None,
+                    # _to_int tolerates separators ('1,200'); raw int() would crash the batch.
+                    stock=_to_int(s["sku_available_stock"]) if s.get("sku_available_stock") is not None else None,
                 )
             )
 
@@ -337,7 +377,8 @@ class AliExpressDSClient:
             rating=_to_decimal(base.get("avg_evaluation_rating"), "0"),
             order_count=_to_int(base.get("sales_count")),
             shipping_info=AliShippingInfo(
-                days=_to_int(logistics.get("delivery_time")),
+                # delivery_time is often a range like '7-15' -> take the first int.
+                days=_first_int(logistics.get("delivery_time")),
                 cost=Decimal("0.00"),
             ),
             seller_info=AliSellerInfo(
@@ -419,11 +460,16 @@ class AliExpressDSClient:
                 logger.warning("aliexpress_ds_detail_failed", product_id=pid, error=str(exc))
                 continue
             resp = data.get("aliexpress_ds_product_get_response", {})
-            if str(resp.get("rsp_code")) not in ("200", "0", "None", "null") and "result" not in resp:
-                logger.warning("aliexpress_ds_detail_rsp", product_id=pid, rsp=resp.get("rsp_msg"))
-                continue
             result = resp.get("result")
             if not result:
+                # No result -> surface the gateway's rsp_msg (e.g. ITEM_ID_NOT_FOUND)
+                # so the skip is attributable, not a silent empty.
+                logger.warning(
+                    "aliexpress_ds_detail_no_result",
+                    product_id=pid,
+                    rsp_code=resp.get("rsp_code"),
+                    rsp_msg=resp.get("rsp_msg"),
+                )
                 continue
             details.append(self._parse_detail(pid, result))
         return details
