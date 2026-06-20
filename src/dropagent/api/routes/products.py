@@ -9,12 +9,17 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from dropagent.api.deps import ProductRepoDep
+from dropagent.clients.aliexpress import get_ali_client
+from dropagent.core.detail_page import render_detail_page
 from dropagent.db.models import Product
+from dropagent.utils.logging import get_logger
 
 router = APIRouter(prefix="/products", tags=["products"])
+logger = get_logger(__name__)
 
 # Status values used by the approval actions.
 STATUS_APPROVED = "approved"
@@ -96,6 +101,39 @@ async def get_product(product_id: int, repo: ProductRepoDep) -> ProductOut:
     if product is None:
         raise HTTPException(status_code=404, detail="Product not found")
     return _serialize(product)
+
+
+@router.get("/{product_id}/detail-preview", response_class=HTMLResponse)
+async def detail_preview(product_id: int, repo: ProductRepoDep) -> HTMLResponse:
+    """Render the auto-generated Korean 상세페이지 for a product (preview).
+
+    Pulls live AliExpress DS detail (images/video/description/options) for the
+    product's real itemId and renders the deterministic 11-section Korean page.
+    Falls back to the product's stored fields when no DS detail is available
+    (e.g. unmatched product or DS error), so the preview never errors.
+    """
+    product = await repo.get_by_id(product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    detail = None
+    ali_id = product.ali_product_id or ""
+    if ali_id and not ali_id.startswith("PENDING-"):
+        client = get_ali_client()
+        try:
+            ds = await client.get_product_detail([ali_id])
+            detail = ds[0] if ds else None
+        except Exception as exc:  # noqa: BLE001 - preview must never 500
+            logger.warning("detail_preview_ds_failed", product_id=product_id, error=str(exc))
+        finally:
+            await client.close()
+
+    html = render_detail_page(
+        detail or product,
+        naver_title=product.product_name_ko,
+        recommended_price=product.price_naver,
+    )
+    return HTMLResponse(content=html)
 
 
 @router.post("/{product_id}/approve", response_model=ProductOut)

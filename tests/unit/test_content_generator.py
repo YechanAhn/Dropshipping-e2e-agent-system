@@ -418,3 +418,35 @@ class TestConstruction:
         """인자 없이 생성해도 예외가 발생하지 않는다 (의존성은 지연 생성)."""
         gen = ContentGenerator()
         assert gen is not None
+
+
+# =====================================================================
+# Detail-page fallback to the deterministic template (no LLM key)
+# =====================================================================
+
+
+class _RaisingDetailRouter(FakeLLMRouter):
+    async def generate_detail_page(self, product_info: dict) -> str:
+        raise RuntimeError("no anthropic api key")
+
+
+class _EmptyDetailRouter(FakeLLMRouter):
+    async def generate_detail_page(self, product_info: dict) -> str:
+        return ""
+
+
+class TestDetailPageFallback:
+    """LLM 미설정/실패 시 결정론적 한글 템플릿으로 폴백한다."""
+
+    async def test_falls_back_to_template_when_llm_raises(self):
+        gen = ContentGenerator(llm_router=_RaisingDetailRouter(), category_mapper=CategoryMapper())
+        content = await gen.generate(_make_ali_object())
+        html = content.description_html
+        assert 'data-sec="hook"' in html and 'data-sec="cta_review"' in html
+
+    async def test_template_css_not_corrupted_by_avoid_words(self):
+        # the template is NOT run through _strip_avoid_words, so width:100% survives
+        # (AVOID_WORDS contains "100%").
+        gen = ContentGenerator(llm_router=_EmptyDetailRouter(), category_mapper=CategoryMapper())
+        content = await gen.generate(_make_ali_object())
+        assert "width:100%" in content.description_html

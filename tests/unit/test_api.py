@@ -280,6 +280,37 @@ async def test_settings_get_and_put(client: httpx.AsyncClient) -> None:
     assert put_resp.json()["automation_flags"]["auto_approve"] is True
 
 
+async def test_detail_preview_renders_html_from_stored_fields():
+    """detail-preview returns the rendered 상세페이지 HTML; PENDING ali_id skips
+    the live DS call so the test stays network-free."""
+    product = _make_product(7, "approved")
+    product.ali_product_id = "PENDING-demo"  # skip live DS branch
+    product.product_name_ko = "무선 이어폰"
+    product.price_naver = Decimal("19900.00")
+
+    application = create_app()
+    application.dependency_overrides[get_product_repo] = lambda: FakeProductRepository([product])
+    transport = httpx.ASGITransport(app=application)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.get("/products/7/detail-preview")
+
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers.get("content-type", "")
+    body = resp.text
+    assert 'data-sec="hook"' in body and 'data-sec="cta_review"' in body
+    assert "무선 이어폰" in body
+    assert "₩19,900" in body
+
+
+async def test_detail_preview_404_for_missing():
+    application = create_app()
+    application.dependency_overrides[get_product_repo] = lambda: FakeProductRepository([])
+    transport = httpx.ASGITransport(app=application)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.get("/products/999/detail-preview")
+    assert resp.status_code == 404
+
+
 async def test_cors_allows_dashboard_origin():
     """The Next.js dashboard origin is allowed by CORS."""
     app = create_app()

@@ -27,6 +27,7 @@ LLM 기반 상세페이지 콘텐츠 생성 모듈 (텍스트 우선 전략)
 from dataclasses import dataclass, field
 from typing import Any
 
+from dropagent.core.detail_page import render_detail_page
 from dropagent.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -260,17 +261,29 @@ class ContentGenerator:
             "attributes": self._summarize_attributes(ali_product),
             "original_description": description_src,
             "image_urls": ", ".join(source_image_urls),
+            "video_url": str(_get_attr(ali_product, "video_url") or ""),
             "options": self._summarize_options(ali_product),
         }
-        description_html = await self.llm_router.generate_detail_page(product_info)
-        description_html = str(description_html or "")
-
-        # HTML 가드레일: 상표/위험 단어를 제거하되, HITL/후처리용 마커
-        # (<!-- NEEDS_IMAGE_CLEANUP -->, <!-- VIDEO_SLOT -->)는 보존한다.
-        description_html, html_avoid = _strip_avoid_words(description_html)
-        if html_avoid:
-            warnings.append(
-                f"상세페이지에서 상표/위험 단어 제거: {', '.join(html_avoid)}"
+        # LLM 카피라이팅(키 있을 때)을 우선 시도하고, 실패/미설정 시 DS 데이터로
+        # 결정론적 한글 상세페이지를 렌더링한다(항상 동작하는 디자인 기반/폴백).
+        # LLM 출력은 상표/위험 단어가 섞일 수 있어 가드레일을 적용하지만, 결정론적
+        # 템플릿은 카피가 이미 안전하므로 strip 하지 않는다(스타일의 width:100% 등이
+        # AVOID_WORDS "100%" 에 의해 손상되는 것을 방지).
+        description_html = ""
+        llm_html = ""
+        try:
+            llm_html = str(await self.llm_router.generate_detail_page(product_info) or "")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("detail_page_llm_failed_fallback_template", error=str(exc))
+        if llm_html.strip():
+            description_html, html_avoid = _strip_avoid_words(llm_html)
+            if html_avoid:
+                warnings.append(
+                    f"상세페이지에서 상표/위험 단어 제거: {', '.join(html_avoid)}"
+                )
+        else:
+            description_html = render_detail_page(
+                ali_product, naver_title=title_ko, recommended_price=price_krw
             )
 
         # 4) 키워드 추출
@@ -453,8 +466,16 @@ class ContentGenerator:
 
     @staticmethod
     def _collect_image_urls(ali_product: Any) -> list[str]:
-        """상품 대표 이미지 + 옵션 이미지 URL을 중복 없이 수집합니다."""
+        """상품 갤러리(전체) + 대표 이미지 + 옵션 이미지 URL을 중복 없이 수집합니다.
+
+        DS 상세는 전체 갤러리(``image_urls``)와 영상을 제공하므로, 있으면 그것을
+        우선 사용해 상세페이지에 풍부한 이미지를 넣습니다.
+        """
         urls: list[str] = []
+
+        gallery = _get_attr(ali_product, "image_urls")
+        if gallery:
+            urls.extend(str(u) for u in gallery if u)
 
         main_image = _get_attr(ali_product, "image_url")
         if main_image:

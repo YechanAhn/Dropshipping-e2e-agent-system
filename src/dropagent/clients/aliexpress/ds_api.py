@@ -346,6 +346,10 @@ class AliExpressDSClient:
         )
 
         images = [u for u in str(multimedia.get("image_urls", "")).split(";") if u]
+        videos = (multimedia.get("ae_video_dtos", {}) or {}).get("ae_video_d_t_o", []) or []
+        if isinstance(videos, dict):
+            videos = [videos]
+        video_url = next((v.get("media_url") for v in videos if v.get("media_url")), None)
 
         variants: list[AliProductVariant] = []
         for s in skus:
@@ -373,6 +377,8 @@ class AliExpressDSClient:
             currency=currency,
             category_id=str(base.get("category_id", "")) or None,
             image_url=images[0] if images else "",
+            image_urls=images,
+            video_url=video_url,
             product_url=base.get("detail_url", ""),
             rating=_to_decimal(base.get("avg_evaluation_rating"), "0"),
             order_count=_to_int(base.get("sales_count")),

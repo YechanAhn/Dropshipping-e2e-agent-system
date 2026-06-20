@@ -42,6 +42,8 @@ class AliProduct(BaseModel):
     category_id: str | None = Field(default=None, description="Product category ID")
     category_name: str | None = Field(default=None, description="Product category name")
     image_url: str = Field(default="", description="Main product image URL")
+    image_urls: list[str] = Field(default_factory=list, description="All gallery image URLs")
+    video_url: str | None = Field(default=None, description="Product video URL, if any")
     product_url: str = Field(default="", description="Affiliate product URL")
     rating: Decimal = Field(default=Decimal("0.0"), description="Product average rating")
     order_count: int = Field(default=0, description="Total order count")

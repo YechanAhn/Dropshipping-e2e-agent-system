@@ -214,6 +214,13 @@ async def test_get_product_detail_parses_cheapest_sku_krw():
     assert d.options[0].value == "검정색"
 
 
+async def test_get_product_detail_parses_gallery_and_video():
+    c = _client()
+    d = (await c.get_product_detail(["1005008089329682"]))[0]
+    assert d.image_urls == ["https://ae01.example/1.jpg", "https://ae01.example/2.jpg"]
+    assert d.video_url == "https://v.example/1.mp4"
+
+
 async def test_get_product_detail_empty_input():
     c = _client()
     assert await c.get_product_detail([]) == []
