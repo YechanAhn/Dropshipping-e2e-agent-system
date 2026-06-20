@@ -338,6 +338,94 @@ async def test_refresh_raises_on_error_envelope():
     assert c._access_token == "tok-123"
 
 
+async def test_query_freight_parses_and_sorts():
+    payload = {
+        "aliexpress_ds_freight_query_response": {
+            "result": {
+                "delivery_options": {
+                    "delivery_option_d_t_o": [
+                        {"code": "B", "company": "Standard", "shipping_fee_cent": "3000.00",
+                         "shipping_fee_currency": "KRW", "min_delivery_days": 10, "max_delivery_days": 20},
+                        {"code": "A", "company": "Premium", "shipping_fee_cent": "1300.00",
+                         "shipping_fee_currency": "KRW", "min_delivery_days": 3, "max_delivery_days": 5,
+                         "free_shipping": False},
+                    ]
+                }
+            }
+        }
+    }
+    c = AliExpressDSClient(settings=_settings(), http_client=_StaticHttp(post_payload=payload))
+    opts = await c.query_freight("1005", "sku1")
+    assert len(opts) == 2
+    assert opts[0].fee == Decimal("1300")  # cheapest first
+    assert opts[0].company == "Premium"
+    assert opts[0].min_days == 3 and opts[0].currency == "KRW"
+
+
+async def test_place_order_success_returns_order_ids():
+    payload = {
+        "aliexpress_trade_buy_placeorder_response": {
+            "result": {"is_success": True, "order_list": {"number": [3230001, 3230002]}}
+        }
+    }
+    c = AliExpressDSClient(settings=_settings(), http_client=_StaticHttp(post_payload=payload))
+    r = await c.place_order({"country": "KR"}, [{"product_id": "p1", "product_count": 1}])
+    assert r.is_success is True
+    assert r.order_ids == ["3230001", "3230002"]
+
+
+async def test_place_order_failure_reports_error():
+    payload = {
+        "aliexpress_trade_buy_placeorder_response": {
+            "result": {"is_success": False, "error_code": "B_ADDRESS", "error_msg": "bad address"}
+        }
+    }
+    c = AliExpressDSClient(settings=_settings(), http_client=_StaticHttp(post_payload=payload))
+    r = await c.place_order({"country": "KR"}, [{"product_id": "p1", "product_count": 1}])
+    assert r.is_success is False
+    assert r.order_ids == [] and r.error_code == "B_ADDRESS"
+
+
+async def test_ds_source_order_placer_creates_order_never_pays():
+    from dropagent.agents.ds_order_placer import make_ds_source_order_placer
+    from dropagent.agents.order_manager import FulfillmentDraft
+    from dropagent.clients.aliexpress.ds_api import PlaceOrderResult
+
+    class _FakeDS:
+        def __init__(self) -> None:
+            self.calls: list = []
+            self.paid = False  # proves the placer never pays
+
+        async def place_order(self, logistics_address, product_items):  # noqa: ANN001
+            self.calls.append((logistics_address, product_items))
+            return PlaceOrderResult(is_success=True, order_ids=["999"])
+
+    fake = _FakeDS()
+    placer = make_ds_source_order_placer(fake)
+    draft = FulfillmentDraft(
+        naver_order_id="N1", source_product_id="P1", quantity=2, shipping_address={"country": "KR"}
+    )
+    oid = await placer(draft)
+    assert oid == "999"
+    _, items = fake.calls[0]
+    assert items[0]["product_id"] == "P1" and items[0]["product_count"] == 2
+    assert fake.paid is False
+
+
+async def test_ds_source_order_placer_returns_none_on_failure():
+    from dropagent.agents.ds_order_placer import make_ds_source_order_placer
+    from dropagent.agents.order_manager import FulfillmentDraft
+    from dropagent.clients.aliexpress.ds_api import PlaceOrderResult
+
+    class _FailDS:
+        async def place_order(self, logistics_address, product_items):  # noqa: ANN001
+            return PlaceOrderResult(is_success=False, error_code="X", error_msg="nope")
+
+    placer = make_ds_source_order_placer(_FailDS())
+    draft = FulfillmentDraft(naver_order_id="N2", source_product_id="P2", quantity=1)
+    assert await placer(draft) is None
+
+
 async def test_search_handles_single_dict_and_empty():
     single = {
         "aliexpress_ds_text_search_response": {

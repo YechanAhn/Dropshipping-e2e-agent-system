@@ -81,6 +81,9 @@ class AliExpressSettings(BaseSettings):
     # DS search locale/ship-to (KR market).
     ship_to_country: str = Field(default="KR", alias="ALI_SHIP_TO_COUNTRY")
     search_locale: str = Field(default="ko_KR", alias="ALI_SEARCH_LOCALE")
+    # Hard gate for automated source-order CREATION (never auto-pays). Off by
+    # default: placing an order is a real outward action requiring opt-in.
+    auto_order: bool = Field(default=False, alias="ALI_AUTO_ORDER")
 
     model_config = SettingsConfigDict(
         env_file=".env",

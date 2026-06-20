@@ -23,6 +23,7 @@ import hmac
 import json
 import re
 import time
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -80,6 +81,33 @@ def _first_int(value: Any, default: int = 0) -> int:
         return default
     match = re.search(r"\d+", str(value))
     return int(match.group()) if match else default
+
+
+@dataclass
+class FreightOption:
+    """A shipping option from ds.freight.query (cost already in target currency)."""
+
+    code: str
+    company: str
+    fee: Decimal
+    free_shipping: bool = False
+    min_days: int = 0
+    max_days: int = 0
+    currency: str = "KRW"
+
+
+@dataclass
+class PlaceOrderResult:
+    """Result of trade.buy.placeorder. ``is_success`` + the created order ids.
+
+    NOTE: placing an order creates a real (unpaid) order obligation on AliExpress.
+    Payment is a SEPARATE manual step and is never performed by this client.
+    """
+
+    is_success: bool
+    order_ids: list[str] = field(default_factory=list)
+    error_code: str = ""
+    error_msg: str = ""
 
 
 class AliExpressDSClient:
@@ -479,3 +507,87 @@ class AliExpressDSClient:
                 continue
             details.append(self._parse_detail(pid, result))
         return details
+
+    async def query_freight(
+        self,
+        product_id: str,
+        sku_id: str,
+        *,
+        quantity: int = 1,
+        country: str | None = None,
+    ) -> list[FreightOption]:
+        """Live shipping options/cost for a SKU via ``aliexpress.ds.freight.query``.
+
+        Non-mutating. Returns the available delivery options (fee already in
+        ``target_currency``), cheapest-first. Used to put a REAL shipping cost into
+        the landed-cost estimate instead of assuming 0.
+        """
+        req = {
+            "productId": str(product_id),
+            "quantity": quantity,
+            "shipToCountry": country or self._settings.ship_to_country,
+            "selectedSkuId": str(sku_id),
+            "currency": self._settings.target_currency,
+            "locale": self._settings.search_locale,
+            "language": self._settings.target_language.lower()[:2],
+        }
+        data = await self._request("aliexpress.ds.freight.query", {"queryDeliveryReq": json.dumps(req)})
+        result = data.get("aliexpress_ds_freight_query_response", {}).get("result", {}) or {}
+        raw = (result.get("delivery_options", {}) or {}).get("delivery_option_d_t_o", []) or []
+        if isinstance(raw, dict):
+            raw = [raw]
+        options = [
+            FreightOption(
+                code=str(o.get("code", "")),
+                company=str(o.get("company", "")),
+                fee=_to_decimal(o.get("shipping_fee_cent")),
+                free_shipping=bool(o.get("free_shipping")),
+                min_days=_to_int(o.get("min_delivery_days")),
+                max_days=_to_int(o.get("max_delivery_days")),
+                currency=str(o.get("shipping_fee_currency") or self._settings.target_currency),
+            )
+            for o in raw
+        ]
+        options.sort(key=lambda o: o.fee)
+        return options
+
+    async def place_order(
+        self,
+        logistics_address: dict[str, Any],
+        product_items: list[dict[str, Any]],
+    ) -> PlaceOrderResult:
+        """Create an AliExpress order via ``aliexpress.trade.buy.placeorder``.
+
+        ⚠️ This creates a REAL (unpaid) order obligation on AliExpress. It does
+        NOT pay -- payment is a separate, human-gated step. Callers must gate this
+        behind explicit opt-in (see make_ds_source_order_placer + ALI_AUTO_ORDER).
+
+        Args:
+            logistics_address: buyer address dict (country, province, city, address,
+                zip, contact_person, mobile_no, full_name, phone_country, locale).
+            product_items: list of {product_id, sku_attr|sku_id, product_count,
+                logistics_service_name?, order_memo?}.
+
+        Returns:
+            PlaceOrderResult with success flag + created order id(s).
+        """
+        req = {"logistics_address": logistics_address, "product_items": product_items}
+        data = await self._request(
+            "aliexpress.trade.buy.placeorder", {"param_place_order_request4": json.dumps(req)}
+        )
+        resp = data.get("aliexpress_trade_buy_placeorder_response", data)
+        result = resp.get("result", resp) or {}
+        is_success = bool(result.get("is_success") or result.get("isSuccess"))
+        order_wrap = result.get("order_list", result.get("orderList", {})) or {}
+        if isinstance(order_wrap, dict):
+            order_ids = order_wrap.get("number", order_wrap.get("string", []))
+        else:
+            order_ids = order_wrap
+        if isinstance(order_ids, (str, int)):
+            order_ids = [order_ids]
+        return PlaceOrderResult(
+            is_success=is_success,
+            order_ids=[str(o) for o in (order_ids or [])],
+            error_code=str(result.get("error_code", "")),
+            error_msg=str(result.get("error_msg", result.get("errorMsg", ""))),
+        )
