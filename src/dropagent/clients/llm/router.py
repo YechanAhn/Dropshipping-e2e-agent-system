@@ -92,12 +92,24 @@ class LLMRouter:
         cache: LLMCache | None = None,
     ) -> None:
         self._settings = settings or get_settings()
-        self.client = AsyncAnthropic(api_key=self._settings.anthropic.api_key)
+        anthropic = self._settings.anthropic
+        # Prefer subscription OAuth (Bearer) when configured; else API key.
+        auth_token = getattr(anthropic, "auth_token", "") or ""
+        if auth_token:
+            self.client = AsyncAnthropic(
+                auth_token=auth_token,
+                default_headers={"anthropic-beta": "oauth-2025-04-20"},
+            )
+            self._auth_mode = "oauth"
+        else:
+            self.client = AsyncAnthropic(api_key=anthropic.api_key)
+            self._auth_mode = "api_key"
         self.cache = cache or LLMCache()
 
         logger.info(
             "llm_router_initialized",
             task_count=len(self.TASK_MODELS),
+            auth_mode=self._auth_mode,
             cache_max_size=self.cache._max_size,
         )
 

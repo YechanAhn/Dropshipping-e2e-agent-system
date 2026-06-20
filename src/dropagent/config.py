@@ -9,9 +9,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class AnthropicSettings(BaseSettings):
-    """Anthropic API settings."""
+    """Anthropic LLM settings.
 
-    api_key: str = Field(..., alias="ANTHROPIC_API_KEY")
+    Supports either an API key OR a subscription OAuth bearer token. The OAuth
+    token (from ``claude setup-token``) is preferred when set, so the system can
+    run on a Claude subscription instead of a metered API key.
+    """
+
+    api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
+    # Subscription OAuth bearer token (preferred when set). Sent as
+    # Authorization: Bearer with the OAuth beta header.
+    auth_token: str = Field(default="", alias="ANTHROPIC_AUTH_TOKEN")
 
     model_config = SettingsConfigDict(
         env_file=".env",
