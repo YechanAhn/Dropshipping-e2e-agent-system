@@ -72,6 +72,15 @@ class AliExpressSettings(BaseSettings):
     # the API (AliExpress applies its own buyer-side FX, which is what we pay).
     target_currency: str = Field(default="KRW", alias="ALI_TARGET_CURRENCY")
     target_language: str = Field(default="EN", alias="ALI_TARGET_LANGUAGE")
+    # Dropshipping (DS) API OAuth tokens. The DS API (aliexpress.ds.*) needs a
+    # user access_token; obtain via OAuth and refresh via /rest/auth/token/refresh.
+    # Empty -> DS client unavailable (falls back to the affiliate client).
+    access_token: str = Field(default="", alias="ALI_ACCESS_TOKEN")
+    refresh_token: str = Field(default="", alias="ALI_REFRESH_TOKEN")
+    token_expire_at: str = Field(default="", alias="ALI_TOKEN_EXPIRE_AT")
+    # DS search locale/ship-to (KR market).
+    ship_to_country: str = Field(default="KR", alias="ALI_SHIP_TO_COUNTRY")
+    search_locale: str = Field(default="ko_KR", alias="ALI_SEARCH_LOCALE")
 
     model_config = SettingsConfigDict(
         env_file=".env",
