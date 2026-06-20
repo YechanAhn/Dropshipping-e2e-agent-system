@@ -69,13 +69,25 @@ async def _seed_keyword(repo, shopping, ali, keyword: str, display: int) -> str:
     if not market:
         return "no-naver"
 
-    # AliExpress source: top product for the keyword (DS, KRW prices).
-    # Skip zero/placeholder-priced items -- a 0 price would yield landed cost 0
-    # and defeat the margin floor.
+    # AliExpress source: pick the first product whose price is PLAUSIBLE vs the
+    # Naver market (matcher's price-ratio signal: ali/naver in 0.05..0.8). This
+    # rejects obvious mismatches (e.g. a 4k pillow under a 139k "캠핑 의자"),
+    # which "top search result" alone would wrongly accept. Full same-product
+    # certainty still needs the ProductMatcher (title+image+LLM verify).
+    naver_ref = market["catalog_lowest"] or market["price_median"] or market["price_min"] or 0
     search = await ali.search_products(keyword, page_size=10)
-    top = next((p for p in search.products if p.price.sale_price > 0), None)
+
+    def _plausible(p) -> bool:  # noqa: ANN001
+        price = float(p.price.sale_price)
+        if price <= 0:
+            return False
+        if naver_ref <= 0:
+            return True
+        return 0.05 <= price / naver_ref <= 0.8
+
+    top = next((p for p in search.products if _plausible(p)), None)
     if top is None:
-        return "no-ali"
+        return "no-plausible-ali"
 
     landed = estimate_landed_cost(top)  # KRW (target_currency=KRW) -> no FX
     catalog_lowest = market["catalog_lowest"]
