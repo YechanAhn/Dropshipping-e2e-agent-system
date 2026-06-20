@@ -195,6 +195,55 @@ class AliExpressDSClient:
         )
 
     # ------------------------------------------------------------------
+    # Token refresh (IOP /rest signing: path-prefixed base)
+    # ------------------------------------------------------------------
+
+    async def refresh_access_token(self) -> dict[str, Any]:
+        """Refresh the DS access_token using the stored refresh_token.
+
+        Calls ``/rest/auth/token/refresh`` (IOP signing = ``path`` + sorted
+        key+value). Updates the in-memory access_token and returns the raw token
+        payload (access_token, refresh_token, expire_time, ...). Callers should
+        persist the returned tokens (see scripts/refresh_ali_token.py).
+        """
+        if not self._settings.refresh_token:
+            raise APIError(message="No refresh_token configured", api_name="aliexpress_ds")
+
+        path = "/auth/token/refresh"
+        params = {
+            "app_key": self._settings.app_key,
+            "timestamp": str(int(time.time() * 1000)),
+            "sign_method": "sha256",
+            "refresh_token": self._settings.refresh_token,
+        }
+        base = path + "".join(f"{k}{params[k]}" for k in sorted(params))
+        params["sign"] = hmac.new(
+            self._settings.app_secret.encode("utf-8"),
+            base.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest().upper()
+
+        response = await self._client.get(TOKEN_REFRESH_URL, params=params)
+        if response.status_code != 200:
+            raise APIError(
+                message=f"AliExpress DS token refresh failed: HTTP {response.status_code}",
+                api_name="aliexpress_ds",
+                status_code=response.status_code,
+                response_body=response.text,
+            )
+        data = response.json()
+        token = data.get("access_token")
+        if not token:
+            raise APIError(
+                message=f"AliExpress DS token refresh returned no access_token: {data}",
+                api_name="aliexpress_ds",
+                response_body=str(data),
+            )
+        self._access_token = token
+        logger.info("aliexpress_ds_token_refreshed", expire_time=data.get("expire_time"))
+        return data
+
+    # ------------------------------------------------------------------
     # Parsing
     # ------------------------------------------------------------------
 

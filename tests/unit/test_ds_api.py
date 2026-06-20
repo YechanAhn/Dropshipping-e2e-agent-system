@@ -16,11 +16,12 @@ from dropagent.clients.aliexpress.ds_api import AliExpressDSClient
 # ─── Fake settings + HTTP ────────────────────────────────────────────────
 
 
-def _settings(access_token: str = "tok-123") -> SimpleNamespace:
+def _settings(access_token: str = "tok-123", refresh_token: str = "rt-1") -> SimpleNamespace:
     return SimpleNamespace(
         app_key="537474",
         app_secret="SECRET",
         access_token=access_token,
+        refresh_token=refresh_token,
         target_currency="KRW",
         target_language="KO",
         search_locale="ko_KR",
@@ -135,6 +136,12 @@ class _FakeHttp:
             return _FakeResp(_DETAIL_RESPONSE)
         return _FakeResp({"error_response": {"code": "unknown", "msg": "no route"}})
 
+    async def get(self, url, params=None):  # noqa: ANN001
+        self.last_params = params
+        return _FakeResp(
+            {"access_token": "new-access-token", "refresh_token": "new-refresh", "expire_time": 9999}
+        )
+
     async def aclose(self) -> None:
         self.is_closed = True
 
@@ -210,6 +217,20 @@ async def test_get_product_detail_parses_cheapest_sku_krw():
 async def test_get_product_detail_empty_input():
     c = _client()
     assert await c.get_product_detail([]) == []
+
+
+# ─── token refresh ───────────────────────────────────────────────────────
+
+
+async def test_refresh_access_token_updates_in_memory_token():
+    http = _FakeHttp()
+    c = _client(http)
+    data = await c.refresh_access_token()
+    assert data["access_token"] == "new-access-token"
+    assert c._access_token == "new-access-token"
+    # signs with IOP /rest path-prefixed base (sign present in the request).
+    assert http.last_params is not None and "sign" in http.last_params
+    assert http.last_params["refresh_token"] == "rt-1"
 
 
 # ─── factory ─────────────────────────────────────────────────────────────
