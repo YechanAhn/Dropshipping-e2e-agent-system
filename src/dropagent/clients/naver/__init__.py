@@ -6,7 +6,7 @@ Provides clients for the Naver Shopping Search API, the Naver Commerce
 underlying authentication helpers.
 """
 
-from .auth import NaverAuth, NaverCommerceAuth
+from .auth import NaverAuth, NaverCommerceAuth, NaverSearchAdAuth
 from .commerce_api import NaverCommerceClient
 from .datalab_api import NaverDataLabClient
 from .models import (
@@ -18,16 +18,20 @@ from .models import (
     NaverTrendItem,
     NaverTrendResult,
 )
+from .searchad_api import KeywordStat, NaverSearchAdClient
 from .shopping_api import NaverShoppingClient
 
 __all__ = [
     # Auth
     "NaverAuth",
     "NaverCommerceAuth",
+    "NaverSearchAdAuth",
     # Clients
     "NaverCommerceClient",
     "NaverDataLabClient",
+    "NaverSearchAdClient",
     "NaverShoppingClient",
+    "KeywordStat",
     # Models
     "NaverCommerceProduct",
     "NaverOriginProduct",

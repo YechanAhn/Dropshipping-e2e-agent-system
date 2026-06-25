@@ -21,16 +21,35 @@ logger = get_logger(__name__)
 # Cache lifetime in seconds (1 hour)
 CACHE_TTL = 3600
 
-# Hardcoded fallback rates (approximate, used when the API is unreachable).
-# Base currency: USD
+# Hardcoded fallback rates (approximate). This is the SINGLE last-resort table,
+# used ONLY when the live exchange-rate API is unreachable -- never as the primary
+# rate. Base currency: USD.
 FALLBACK_RATES: dict[str, Decimal] = {
-    "KRW": Decimal("1350.00"),
+    # Conservative current USD->KRW (~1500). Erring high protects margin when the
+    # live rate is unavailable (under-pricing a USD-sourced item loses money).
+    "KRW": Decimal("1500.00"),
     "CNY": Decimal("7.25"),
     "JPY": Decimal("155.00"),
     "EUR": Decimal("0.92"),
     "GBP": Decimal("0.79"),
     "USD": Decimal("1.00"),
 }
+
+
+def to_krw(amount: Decimal, currency: str, usd_krw_rate: Decimal) -> Decimal:
+    """
+    Convert *amount* in *currency* to KRW.
+
+    KRW passes through untouched (e.g. a price AliExpress already returned in
+    won via ``target_currency=KRW``). Anything else is treated as USD-equivalent
+    and multiplied by the *live* ``usd_krw_rate`` supplied by the caller. This is
+    the single place currency normalisation happens -- callers must never embed
+    a literal FX rate.
+    """
+    cur = (currency or "USD").upper()
+    if cur == "KRW":
+        return amount
+    return amount * usd_krw_rate
 
 
 class _CacheEntry:

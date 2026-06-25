@@ -16,7 +16,7 @@ from typing import Any
 import httpx
 
 from dropagent.config import NaverSettings, get_settings
-from dropagent.core.rate_limiter import NAVER_COMMERCE_RATE_LIMIT, AsyncRateLimiter
+from dropagent.core.rate_limiter import TokenBucketRateLimiter
 from dropagent.utils.exceptions import APIError, RateLimitError
 from dropagent.utils.logging import get_logger
 
@@ -46,13 +46,13 @@ class NaverCommerceClient:
         self,
         settings: NaverSettings | None = None,
         http_client: httpx.AsyncClient | None = None,
-        rate_limiter: AsyncRateLimiter | None = None,
+        rate_limiter: TokenBucketRateLimiter | None = None,
     ) -> None:
         """
         Args:
             settings: Naver API credentials.  Falls back to ``get_settings().naver``.
             http_client: Optional pre-configured httpx.AsyncClient.
-            rate_limiter: Optional ``AsyncRateLimiter`` for enforcing rate limits.
+            rate_limiter: Optional ``TokenBucketRateLimiter`` for enforcing rate limits.
         """
         self._settings = settings or get_settings().naver
         self._auth = NaverCommerceAuth(self._settings)
@@ -80,20 +80,12 @@ class NaverCommerceClient:
     # ------------------------------------------------------------------
 
     async def _wait_for_rate_limit(self) -> None:
-        """Wait until the token bucket permits a request (no-op without Redis)."""
+        """Wait until the token bucket permits a request (no-op if no limiter)."""
         if self._rate_limiter is None:
             return
-        acquired = await self._rate_limiter.wait_for_token(
-            key="naver_commerce_api",
-            max_tokens=NAVER_COMMERCE_RATE_LIMIT["max_tokens"],
-            refill_rate=NAVER_COMMERCE_RATE_LIMIT["refill_rate"],
-            timeout=30.0,
-        )
-        if not acquired:
-            raise RateLimitError(
-                message="Naver Commerce API rate limit: failed to acquire token within timeout",
-                api_name="naver_commerce",
-            )
+        # ``acquire`` blocks until a token is available and raises
+        # ``RateLimitError`` itself if the timeout elapses first.
+        await self._rate_limiter.acquire(timeout=30.0)
 
     async def _request(
         self,

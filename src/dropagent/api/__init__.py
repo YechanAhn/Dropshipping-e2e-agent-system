@@ -11,5 +11,6 @@ dependency injection helpers:
     - **middleware**: Request logging, error handling, CORS.
     - **deps**: Shared FastAPI dependencies (DB session, auth, etc.).
 """
+from dropagent.api.app import create_app
 
-__all__: list[str] = []
+__all__ = ["create_app"]

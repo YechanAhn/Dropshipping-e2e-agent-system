@@ -9,9 +9,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class AnthropicSettings(BaseSettings):
-    """Anthropic API settings."""
+    """Anthropic LLM settings.
 
-    api_key: str = Field(..., alias="ANTHROPIC_API_KEY")
+    Supports either an API key OR a subscription OAuth bearer token. The OAuth
+    token (from ``claude setup-token``) is preferred when set, so the system can
+    run on a Claude subscription instead of a metered API key.
+    """
+
+    api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
+    # Subscription OAuth bearer token (preferred when set). Sent as
+    # Authorization: Bearer with the OAuth beta header.
+    auth_token: str = Field(default="", alias="ANTHROPIC_AUTH_TOKEN")
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -40,12 +48,50 @@ class NaverSettings(BaseSettings):
     )
 
 
+class NaverSearchAdSettings(BaseSettings):
+    """
+    Naver Search Ad (검색광고) API settings.
+
+    Used by the Keyword Tool (``/keywordstool``) which is the only source of
+    absolute monthly search volume (월간검색수). Credentials are issued from
+    the 검색광고 management UI: 도구 > API 사용 관리.
+    """
+
+    api_key: str = Field(..., alias="NAVER_SEARCHAD_API_KEY")
+    secret_key: str = Field(..., alias="NAVER_SEARCHAD_SECRET_KEY")
+    customer_id: str = Field(..., alias="NAVER_SEARCHAD_CUSTOMER_ID")
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=True,
+        extra="ignore",
+    )
+
+
 class AliExpressSettings(BaseSettings):
     """AliExpress API settings."""
 
     app_key: str = Field(..., alias="ALI_APP_KEY")
     app_secret: str = Field(..., alias="ALI_APP_SECRET")
     tracking_id: str = Field(..., alias="ALI_TRACKING_ID")
+    # Ask AliExpress to return prices ALREADY converted to this currency, so we
+    # never guess an FX rate for the source price. KRW = native won straight from
+    # the API (AliExpress applies its own buyer-side FX, which is what we pay).
+    target_currency: str = Field(default="KRW", alias="ALI_TARGET_CURRENCY")
+    target_language: str = Field(default="EN", alias="ALI_TARGET_LANGUAGE")
+    # Dropshipping (DS) API OAuth tokens. The DS API (aliexpress.ds.*) needs a
+    # user access_token; obtain via OAuth and refresh via /rest/auth/token/refresh.
+    # Empty -> DS client unavailable (falls back to the affiliate client).
+    access_token: str = Field(default="", alias="ALI_ACCESS_TOKEN")
+    refresh_token: str = Field(default="", alias="ALI_REFRESH_TOKEN")
+    token_expire_at: str = Field(default="", alias="ALI_TOKEN_EXPIRE_AT")
+    # DS search locale/ship-to (KR market).
+    ship_to_country: str = Field(default="KR", alias="ALI_SHIP_TO_COUNTRY")
+    search_locale: str = Field(default="ko_KR", alias="ALI_SEARCH_LOCALE")
+    # Hard gate for automated source-order CREATION (never auto-pays). Off by
+    # default: placing an order is a real outward action requiring opt-in.
+    auto_order: bool = Field(default=False, alias="ALI_AUTO_ORDER")
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -172,6 +218,7 @@ class Settings(BaseSettings):
     app: AppSettings = Field(default_factory=AppSettings)
     anthropic: AnthropicSettings = Field(default_factory=AnthropicSettings)
     naver: NaverSettings = Field(default_factory=NaverSettings)
+    searchad: NaverSearchAdSettings = Field(default_factory=NaverSearchAdSettings)
     aliexpress: AliExpressSettings = Field(default_factory=AliExpressSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     redis: RedisSettings = Field(default_factory=RedisSettings)
@@ -192,6 +239,7 @@ class Settings(BaseSettings):
         self.app = AppSettings()
         self.anthropic = AnthropicSettings()
         self.naver = NaverSettings()
+        self.searchad = NaverSearchAdSettings()
         self.aliexpress = AliExpressSettings()
         self.database = DatabaseSettings()
         self.redis = RedisSettings()

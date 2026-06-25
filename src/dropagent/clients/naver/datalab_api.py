@@ -1,10 +1,15 @@
 """
-Naver DataLab Shopping Insight API client.
+Naver DataLab API client (search-keyword trend + shopping insight).
 
-Provides async methods for retrieving shopping search trends and keyword
-insights from Naver DataLab, useful for market analysis and demand estimation.
+Provides async methods for retrieving relative search/keyword trends from
+Naver DataLab, useful for market analysis and demand estimation.
 
-Reference:
+- ``get_keyword_trend`` -> 통합검색어 트렌드 (``/v1/datalab/search``), category-free.
+- ``get_shopping_trend`` / category keywords -> 쇼핑인사이트
+  (``/v1/datalab/shopping``), which require a shopping category.
+
+References:
+    https://developers.naver.com/docs/serviceapi/datalab/search/search.md
     https://developers.naver.com/docs/serviceapi/datalab/shopping/shopping.md
 """
 
@@ -21,6 +26,7 @@ from .models import NaverTrendGroup, NaverTrendItem, NaverTrendResult
 
 logger = get_logger(__name__)
 
+DATALAB_SEARCH_URL = "https://openapi.naver.com/v1/datalab/search"
 DATALAB_SHOPPING_URL = "https://openapi.naver.com/v1/datalab/shopping"
 DATALAB_CATEGORY_KEYWORDS_URL = "https://openapi.naver.com/v1/datalab/shopping/category/keywords"
 
@@ -121,7 +127,8 @@ class NaverDataLabClient:
         groups: list[NaverTrendGroup] = []
         for result in data.get("results", []):
             title = result.get("title", "")
-            keywords = result.get("keyword", [])
+            # 통합검색어 트렌드 returns ``keywords``; 쇼핑인사이트 returns ``keyword``.
+            keywords = result.get("keywords") or result.get("keyword") or []
             if isinstance(keywords, str):
                 keywords = [keywords]
 
@@ -220,10 +227,11 @@ class NaverDataLabClient:
         time_unit: str = "month",
     ) -> NaverTrendResult:
         """
-        Compare search trends for multiple keywords.
+        Compare relative search trends for multiple keywords.
 
-        Each keyword is submitted as its own group so that their relative
-        popularity can be compared side by side.
+        Backed by 통합검색어 트렌드 (``/v1/datalab/search``), which is
+        category-free. Each keyword is submitted as its own group so that
+        their relative popularity can be compared side by side.
 
         Args:
             keywords: List of keywords to compare (max 5).
@@ -241,9 +249,11 @@ class NaverDataLabClient:
             end_date=end_date,
         )
 
-        # Each keyword becomes its own group for side-by-side comparison
+        # 통합검색어 트렌드 (``/v1/datalab/search``) uses ``keywordGroups`` with
+        # ``groupName`` + ``keywords`` and is category-free -- NOT the shopping
+        # insight ``keyword`` (name/param) shape. Each keyword is its own group.
         keyword_groups = [
-            {"name": kw, "param": [kw]}
+            {"groupName": kw, "keywords": [kw]}
             for kw in keywords[:5]  # API supports max 5 groups
         ]
 
@@ -251,8 +261,8 @@ class NaverDataLabClient:
             "startDate": start_date,
             "endDate": end_date,
             "timeUnit": time_unit,
-            "keyword": keyword_groups,
+            "keywordGroups": keyword_groups,
         }
 
-        data = await self._post(DATALAB_SHOPPING_URL, payload)
+        data = await self._post(DATALAB_SEARCH_URL, payload)
         return self._parse_trend_result(data, start_date, end_date)

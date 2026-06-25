@@ -17,7 +17,7 @@ import hashlib
 import hmac
 import time
 
-from dropagent.config import NaverSettings, get_settings
+from dropagent.config import NaverSearchAdSettings, NaverSettings, get_settings
 from dropagent.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -117,4 +117,76 @@ class NaverCommerceAuth:
             "X-Timestamp": timestamp,
             "X-API-KEY": self._settings.commerce_client_id,
             "X-HMAC-SIGNATURE": signature,
+        }
+
+
+class NaverSearchAdAuth:
+    """
+    HMAC-SHA256 authentication provider for the Naver Search Ad (검색광고) API.
+
+    The Search Ad API signs every request over ``{timestamp}.{method}.{uri}``
+    (note: only the path, no query string) using the account secret key, and
+    passes the signature plus the access-license key and customer id via the
+    ``X-Timestamp`` / ``X-API-KEY`` / ``X-Customer`` / ``X-Signature`` headers.
+
+    Reference:
+        https://naver.github.io/searchad-apidoc/  (signaturehelper)
+    """
+
+    def __init__(self, settings: NaverSearchAdSettings | None = None) -> None:
+        """
+        Args:
+            settings: Search Ad credentials. Falls back to ``get_settings().searchad``.
+        """
+        self._settings = settings or get_settings().searchad
+
+    @staticmethod
+    def _get_timestamp() -> str:
+        """Return the current UNIX timestamp in milliseconds as a string."""
+        return str(int(time.time() * 1000))
+
+    def generate_signature(self, timestamp: str, method: str, uri: str) -> str:
+        """
+        Generate a Base64-encoded HMAC-SHA256 signature.
+
+        The signature is computed over ``{timestamp}.{method}.{uri}`` using the
+        Search Ad secret key as the HMAC key. ``method`` must be uppercase and
+        ``uri`` is the path only (e.g. ``/keywordstool``), excluding the query.
+
+        Args:
+            timestamp: UNIX timestamp in milliseconds (string).
+            method: HTTP method (e.g. ``GET``).
+            uri: API path (e.g. ``/keywordstool``).
+
+        Returns:
+            Base64-encoded HMAC-SHA256 signature string.
+        """
+        message = f"{timestamp}.{method.upper()}.{uri}"
+        signature = hmac.new(
+            self._settings.secret_key.encode("utf-8"),
+            message.encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+        return base64.b64encode(signature).decode("utf-8")
+
+    def get_auth_headers(self, method: str, uri: str) -> dict[str, str]:
+        """
+        Build the full set of authentication headers for a Search Ad request.
+
+        Args:
+            method: HTTP method (e.g. ``GET``).
+            uri: API path (e.g. ``/keywordstool``), excluding any query string.
+
+        Returns:
+            Dictionary with ``X-Timestamp``, ``X-API-KEY``, ``X-Customer``,
+            and ``X-Signature`` headers.
+        """
+        timestamp = self._get_timestamp()
+        signature = self.generate_signature(timestamp, method, uri)
+
+        return {
+            "X-Timestamp": timestamp,
+            "X-API-KEY": self._settings.api_key,
+            "X-Customer": str(self._settings.customer_id),
+            "X-Signature": signature,
         }

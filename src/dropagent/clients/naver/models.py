@@ -6,7 +6,20 @@ Search API, the Naver Commerce API, and the Naver DataLab Shopping Insight API.
 """
 
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+# ---------------------------------------------------------------------------
+# Naver Shopping productType code classification (single source of truth)
+# ---------------------------------------------------------------------------
+# productType codes (1-12) split into 4 상품군 (일반/중고/단종/예정) x
+# {가격비교 대표, 비매칭 단독, 매칭}:
+#   1/4/7/10  = 가격비교 대표 (catalog parent) -- its lprice is the 최저가 badge price
+#   2/5/8/11  = 비매칭 단독 (standalone, not in a catalog) -- dropshipping-friendly
+#   3/6/9/12  = 매칭 (a seller offer matched into a catalog)
+# Verified live: head term "무선이어폰" skews type 1, long-tail "골전도 이어폰" type 2.
+CATALOG_PARENT_PRODUCT_TYPES = frozenset({1, 4, 7, 10})
+STANDALONE_PRODUCT_TYPES = frozenset({2, 5, 8, 11})
+
 
 # ---------------------------------------------------------------------------
 # Naver Shopping Search API models
@@ -30,6 +43,25 @@ class NaverShoppingItem(BaseModel):
     category4: str = Field(default="", description="Fourth-level category name")
 
     model_config = {"populate_by_name": True}
+
+    @field_validator("lowest_price", "highest_price", mode="before")
+    @classmethod
+    def _empty_price_to_zero(cls, v: object) -> object:
+        """The live Shopping API returns hprice/lprice as '' when absent -> 0."""
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return 0
+        return v
+
+    @property
+    def is_catalog(self) -> bool:
+        """True if this is a 가격비교 대표 (catalog parent) listing -- its lprice is
+        the catalog 최저가 badge price a new seller must match for exposure."""
+        return self.product_type in CATALOG_PARENT_PRODUCT_TYPES
+
+    @property
+    def is_standalone(self) -> bool:
+        """True if this is a 비매칭 단독 (standalone) listing, outside any catalog."""
+        return self.product_type in STANDALONE_PRODUCT_TYPES
 
 
 class NaverShoppingResult(BaseModel):
